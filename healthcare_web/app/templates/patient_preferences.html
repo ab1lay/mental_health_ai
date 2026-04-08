@@ -1,0 +1,164 @@
+﻿{% extends 'patient_base.html' %}
+{% set t = t if t is defined else {
+  'page_title': 'Bot Personalization',
+  'page_subtitle': 'Adjust how your bot speaks and when it can proactively check in.',
+  'chat_id': 'Chat ID',
+  'saved': 'Preferences saved.',
+  'tone': 'Tone',
+  'tone_tip': 'Sets communication style.',
+  'response_length': 'Response length',
+  'response_length_tip': 'Controls how long bot replies are.',
+  'support_style': 'Support style',
+  'support_style_tip': 'Defines support format.',
+  'proactive_frequency': 'Proactive frequency (hours)',
+  'proactive_frequency_tip': 'Minimum pause before proactive check-ins.',
+  'quiet_start': 'Quiet hours start (HH:MM)',
+  'quiet_start_tip': 'Start of no-proactive window.',
+  'quiet_end': 'Quiet hours end (HH:MM)',
+  'quiet_end_tip': 'End of no-proactive window.',
+  'topics_to_avoid': 'Topics to avoid (optional)',
+  'topics_to_avoid_tip': 'Topics bot should avoid unless asked.',
+  'topics_placeholder': 'Example: avoid discussing family in proactive messages',
+  'allow_proactive': 'Allow bot to proactively message me',
+  'allow_proactive_tip': 'If disabled, bot only replies to your messages.',
+  'save': 'Save preferences',
+  'tone_supportive': 'Supportive',
+  'tone_calm': 'Calm',
+  'tone_direct': 'Direct',
+  'len_short': 'Short',
+  'len_medium': 'Medium',
+  'len_detailed': 'Detailed',
+  'style_reflective': 'Reflective',
+  'style_practical': 'Practical',
+  'style_motivational': 'Motivational'
+} %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-1">{{ t.page_title }}</h2>
+      <div class="text-muted small">{{ t.page_subtitle }}</div>
+    </div>
+    <div class="text-muted small">{{ t.chat_id }}: {{ patient.chat_id }}</div>
+  </div>
+
+  {% if saved %}
+    <div class="alert alert-success">{{ t.saved }}</div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-body">
+      <form method="post" action="/patient/preferences">
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label">{{ t.tone }}
+              <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.tone_tip }}">?</span>
+            </label>
+            <select class="form-select" name="tone">
+              <option value="supportive" {% if preferences.tone == 'supportive' %}selected{% endif %}>{{ t.tone_supportive }}</option>
+              <option value="calm" {% if preferences.tone == 'calm' %}selected{% endif %}>{{ t.tone_calm }}</option>
+              <option value="direct" {% if preferences.tone == 'direct' %}selected{% endif %}>{{ t.tone_direct }}</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">{{ t.response_length }}
+              <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.response_length_tip }}">?</span>
+            </label>
+            <select class="form-select" name="response_length">
+              <option value="short" {% if preferences.response_length == 'short' %}selected{% endif %}>{{ t.len_short }}</option>
+              <option value="medium" {% if preferences.response_length == 'medium' %}selected{% endif %}>{{ t.len_medium }}</option>
+              <option value="detailed" {% if preferences.response_length == 'detailed' %}selected{% endif %}>{{ t.len_detailed }}</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">{{ t.support_style }}
+              <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.support_style_tip }}">?</span>
+            </label>
+            <select class="form-select" name="support_style">
+              <option value="reflective" {% if preferences.support_style == 'reflective' %}selected{% endif %}>{{ t.style_reflective }}</option>
+              <option value="practical" {% if preferences.support_style == 'practical' %}selected{% endif %}>{{ t.style_practical }}</option>
+              <option value="motivational" {% if preferences.support_style == 'motivational' %}selected{% endif %}>{{ t.style_motivational }}</option>
+            </select>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">{{ t.proactive_frequency }}
+              <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.proactive_frequency_tip }}">?</span>
+            </label>
+            <input class="form-control" type="number" min="6" max="168" name="proactive_frequency_hours" value="{{ preferences.proactive_frequency_hours }}" required />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">{{ t.quiet_start }}
+              <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.quiet_start_tip }}">?</span>
+            </label>
+            <input class="form-control" type="text" name="quiet_hours_start" value="{{ preferences.quiet_hours_start or '' }}" placeholder="22:00" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">{{ t.quiet_end }}
+              <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.quiet_end_tip }}">?</span>
+            </label>
+            <input class="form-control" type="text" name="quiet_hours_end" value="{{ preferences.quiet_hours_end or '' }}" placeholder="08:00" />
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">{{ t.topics_to_avoid }}
+              <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.topics_to_avoid_tip }}">?</span>
+            </label>
+            <textarea class="form-control" rows="3" name="topics_to_avoid" placeholder="{{ t.topics_placeholder }}">{{ preferences.topics_to_avoid or '' }}</textarea>
+          </div>
+
+          <div class="col-12">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="proactive_enabled" id="proactive_enabled" {% if preferences.proactive_enabled %}checked{% endif %}>
+              <label class="form-check-label" for="proactive_enabled">{{ t.allow_proactive }}
+                <span class="ms-1 text-primary" data-bs-toggle="tooltip" title="{{ t.allow_proactive_tip }}">?</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <button class="btn btn-primary" type="submit">{{ t.save }}</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-body">
+      <h5 class="mb-3">{{ t.history_title }}</h5>
+      <div class="list-group">
+        {% for h in pref_history %}
+          <div class="list-group-item">
+            <div class="d-flex justify-content-between align-items-center">
+              <div>
+                <strong>
+                  {% if h.actor_type == 'patient' %}
+                    {{ t.history_actor_patient }}
+                  {% elif h.actor_type == 'specialist' %}
+                    {{ t.history_actor_specialist }}
+                  {% else %}
+                    {{ t.history_actor_system }}
+                  {% endif %}
+                </strong>
+                <span class="text-muted">({{ h.source }})</span>
+              </div>
+              <span class="text-muted small">{{ h.created_at }}</span>
+            </div>
+            <div class="small mt-2">
+              {% for field, delta in h.changed_fields.items() %}
+                <div>
+                  <code>{{ field }}</code>:
+                  <span class="text-muted">{{ delta.old if delta.old is not none else '∅' }}</span>
+                  →
+                  <span>{{ delta.new if delta.new is not none else '∅' }}</span>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        {% else %}
+          <div class="text-muted">{{ t.history_empty }}</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

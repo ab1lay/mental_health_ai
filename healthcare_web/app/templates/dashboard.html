@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+{% block content %}
+  <h2 class="mb-4">Dashboard</h2>
+  <div class="row g-3 mb-4">
+    <div class="col-md-4">
+      <div class="card">
+        <div class="card-body">
+          <div class="text-muted">Patients</div>
+          <div class="fs-3">{{ patient_count }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card">
+        <div class="card-body">
+          <div class="text-muted">Active alerts</div>
+          <div class="fs-3">{{ active_alerts }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h5 class="mb-0">Recent summaries</h5>
+  </div>
+  <div class="list-group">
+    {% for item in recent_summaries %}
+      <a class="list-group-item list-group-item-action" href="/patients/{{ item.patient.id }}">
+        <div class="d-flex justify-content-between">
+          <div><strong>{{ item.patient.display_name }}</strong> ({{ item.patient.chat_id }})</div>
+          <div class="text-muted small">{{ item.last_summary.created_at if item.last_summary else '' }}</div>
+        </div>
+        <div class="small">Risk: {{ item.last_summary.risk_level if item.last_summary else 'n/a' }}</div>
+      </a>
+    {% else %}
+      <div class="text-muted">No summaries yet.</div>
+    {% endfor %}
+  </div>
+
+  <div class="d-flex justify-content-between align-items-center mb-2 mt-4">
+    <h5 class="mb-0">Hot patients</h5>
+  </div>
+  <div class="list-group">
+    {% for item in hot_patients %}
+      <a class="list-group-item list-group-item-action" href="/patients/{{ item.patient.id }}">
+        <div class="d-flex justify-content-between">
+          <div><strong>{{ item.patient.display_name }}</strong> ({{ item.patient.chat_id }})</div>
+          <div class="text-muted small">{{ item.last_summary.created_at if item.last_summary else '' }}</div>
+        </div>
+        <div class="small">
+          Risk: {{ item.last_summary.risk_level if item.last_summary else 'n/a' }}
+          | Emotion: {{ item.last_summary.emotion if item.last_summary else 'n/a' }}
+        </div>
+      </a>
+    {% else %}
+      <div class="text-muted">No hot patients right now.</div>
+    {% endfor %}
+  </div>
+{% endblock %}

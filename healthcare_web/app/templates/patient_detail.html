@@ -1,0 +1,187 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-1">{{ patient.display_name }}</h2>
+      {% if debug_enabled %}
+        <form method="post" action="/debug/patients/{{ patient.id }}/clear-summaries" class="d-inline">
+          <button class="btn btn-sm btn-outline-danger" type="submit">Clear summaries</button>
+        </form>
+        <form method="post" action="/debug/patients/{{ patient.id }}/clear-messages" class="d-inline ms-2">
+          <button class="btn btn-sm btn-outline-danger" type="submit">Clear messages</button>
+        </form>
+        <form method="post" action="/debug/patients/{{ patient.id }}/clear-timeline" class="d-inline ms-2">
+          <button class="btn btn-sm btn-outline-danger" type="submit">Clear timeline</button>
+        </form>
+      {% endif %}
+      <a class="btn btn-sm btn-outline-primary ms-2" href="/patients/{{ patient.id }}/export.csv">Export CSV</a>
+    </div>
+    <div class="text-muted">Chat ID: {{ patient.chat_id }}</div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <div class="text-muted small">Full name</div>
+          <div>{{ patient.full_name or 'n/a' }}</div>
+        </div>
+        <div class="col-md-2">
+          <div class="text-muted small">Age</div>
+          <div>{{ patient.age or 'n/a' }}</div>
+        </div>
+        <div class="col-md-2">
+          <div class="text-muted small">Gender</div>
+          <div>{{ patient.gender or 'n/a' }}</div>
+        </div>
+        <div class="col-md-6">
+          <div class="text-muted small">Phone</div>
+          <div>{{ patient.phone or 'n/a' }}</div>
+        </div>
+        <div class="col-md-6">
+          <div class="text-muted small">Trusted contact</div>
+          <div>{{ patient.trusted_contact or 'n/a' }}</div>
+        </div>
+        <div class="col-md-12">
+          <div class="text-muted small">Notes</div>
+          <div>{{ patient.notes or 'n/a' }}</div>
+        </div>
+        <div class="col-md-12">
+          <div class="text-muted small">
+            {{ 'Важные характеристики из диалога' if patient_language == 'ru' else 'Important characteristics from dialog' }}
+          </div>
+          {% if grouped_characteristics %}
+            <div class="mt-2 characteristic-groups">
+              {% for group in grouped_characteristics %}
+                <div class="characteristic-group characteristic-group-{{ group['key'] }}">
+                  <div class="characteristic-group-title">{{ group['title'] }}</div>
+                  <div class="d-flex flex-wrap gap-2">
+                    {% for item in group['items'] %}
+                      <span class="chip">{{ item }}</span>
+                    {% endfor %}
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="mt-1">n/a</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-lg-6">
+      <h5>Summaries</h5>
+      <div class="list-group">
+        {% for s in summaries %}
+          <div class="list-group-item summary-card">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div class="d-flex gap-2 align-items-center">
+                <span class="badge risk-badge risk-{{ s.risk_level }}">{{ s.risk_level }}</span>
+                <span class="badge bg-light text-dark">Emotion: {{ s.emotion }}</span>
+              </div>
+              <div class="text-muted small">{{ s.created_at }}</div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mb-2">
+              <span class="chip">Depression: {{ '%.2f'|format(s.depression_score) }}</span>
+              <span class="chip">Anxiety: {{ '%.2f'|format(s.anxiety_score) }}</span>
+              <span class="chip">Stress: {{ '%.2f'|format(s.stress_score) }}</span>
+              <span class="chip">Notes: {{ s.profile_note or 'n/a' }}</span>
+            </div>
+
+            <div class="summary-text markdown-body">{{ s.summary | markdown }}</div>
+          </div>
+        {% else %}
+          <div class="text-muted">No summaries yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <h5>Dialog</h5>
+      <div class="card">
+        <div class="card-body dialog-scroll">
+          {% for m in messages %}
+            <div class="message-row {{ 'from-user' if m.role == 'user' else 'from-assistant' }}">
+              <div class="message-meta">
+                <span class="badge bg-secondary">{{ m.role }}</span>
+                <span class="text-muted small">{{ m.created_at }}</span>
+              </div>
+              <div class="message-bubble">{{ m.text }}</div>
+            </div>
+          {% else %}
+            <div class="text-muted">No messages yet.</div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-12">
+      <h5 class="mt-4">Personalization change history</h5>
+      <div class="list-group mb-4">
+        {% for h in preference_history %}
+          <div class="list-group-item">
+            <div class="d-flex justify-content-between">
+              <div>
+                <strong>{{ h.actor_type }}</strong>
+                <span class="text-muted">({{ h.source }})</span>
+              </div>
+              <div class="text-muted small">{{ h.created_at }}</div>
+            </div>
+            <div class="small mt-2">
+              {% for field, delta in h.changed_fields.items() %}
+                <div>
+                  <code>{{ field }}</code>:
+                  <span class="text-muted">{{ delta.old if delta.old is not none else '∅' }}</span>
+                  →
+                  <span>{{ delta.new if delta.new is not none else '∅' }}</span>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        {% else %}
+          <div class="text-muted">No personalization changes yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="col-lg-12">
+      <h5 class="mt-4">Timeline</h5>
+      <div class="list-group">
+        {% for e in timeline %}
+          <div class="list-group-item">
+            <div class="d-flex justify-content-between">
+              <div>
+                <strong>{{ e.event_type }}</strong>
+                {% if e.event_type == 'summary' %}
+                  — Summary recorded
+                  <button class="btn btn-sm btn-outline-primary ms-2" data-bs-toggle="modal" data-bs-target="#summaryModal{{ loop.index }}">View</button>
+                {% else %}
+                  — {{ e.message }}
+                {% endif %}
+              </div>
+              <div class="text-muted small">{{ e.event_time }}</div>
+            </div>
+          </div>
+          {% if e.event_type == 'summary' %}
+            <div class="modal fade" id="summaryModal{{ loop.index }}" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                  <div class="modal-header">
+                    <h5 class="modal-title">Summary</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body">
+                    <div class="summary-text markdown-body">{{ e.message | markdown }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          {% endif %}
+        {% else %}
+          <div class="text-muted">No timeline yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

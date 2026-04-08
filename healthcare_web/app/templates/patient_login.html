@@ -1,0 +1,33 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Patient Login</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body class="bg-light">
+    <main class="container my-5" style="max-width: 460px;">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h4 class="mb-2">Patient Portal</h4>
+          <p class="text-muted">Use the one-time code from Telegram command <code>/portal</code>.</p>
+          {% if error %}
+            <div class="alert alert-danger">{{ error }}</div>
+          {% endif %}
+          <form method="post" action="/patient/login">
+            <div class="mb-3">
+              <label class="form-label">One-time code</label>
+              <input class="form-control" type="text" name="code" value="{{ code }}" required />
+            </div>
+            <button class="btn btn-primary w-100" type="submit">Enter portal</button>
+          </form>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

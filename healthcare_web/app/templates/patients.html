@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0">Patients</h2>
+  </div>
+
+  <form method="get" class="row g-2 mb-3">
+    <div class="col-md-4">
+      <input class="form-control" type="text" name="q" placeholder="Search by name or chat id" value="{{ q }}">
+    </div>
+    <div class="col-md-3">
+      <select class="form-select" name="risk">
+        <option value="">All risks</option>
+        <option value="low" {% if risk == 'low' %}selected{% endif %}>Low</option>
+        <option value="medium" {% if risk == 'medium' %}selected{% endif %}>Medium</option>
+        <option value="high" {% if risk == 'high' %}selected{% endif %}>High</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <select class="form-select" name="emotion">
+        <option value="">All tones</option>
+        <option value="positive" {% if emotion == 'positive' %}selected{% endif %}>Positive</option>
+        <option value="neutral" {% if emotion == 'neutral' %}selected{% endif %}>Neutral</option>
+        <option value="negative" {% if emotion == 'negative' %}selected{% endif %}>Negative</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <button class="btn btn-primary w-100" type="submit">Filter</button>
+    </div>
+  </form>
+  <div class="list-group">
+    {% for item in items %}
+      <a class="list-group-item list-group-item-action" href="/patients/{{ item.patient.id }}">
+        <div class="d-flex justify-content-between">
+          <div><strong>{{ item.patient.display_name }}</strong> ({{ item.patient.chat_id }})</div>
+          <div class="text-muted small">{{ item.last_summary.created_at if item.last_summary else '' }}</div>
+        </div>
+        <div class="small">Risk: {{ item.last_summary.risk_level if item.last_summary else 'n/a' }}</div>
+      </a>
+    {% else %}
+      <div class="text-muted">No patients yet.</div>
+    {% endfor %}
+  </div>
+{% endblock %}

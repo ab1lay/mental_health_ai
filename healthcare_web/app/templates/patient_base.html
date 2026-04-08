@@ -1,0 +1,47 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or (t.portal_title if (t is defined and t) else 'Patient Portal') }}</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body class="bg-light">
+    <style>
+      .patient-topbar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        margin: 0;
+        border: 0;
+        z-index: 1030;
+      }
+      .patient-page {
+        padding-top: 72px;
+      }
+    </style>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary patient-topbar">
+      <div class="container">
+        <a class="navbar-brand" href="/patient/preferences">{{ t.portal_title if (t is defined and t) else 'Patient Portal' }}</a>
+        <div class="text-white small">
+          {{ patient.display_name if patient else '' }}
+          <a class="text-white ms-3" href="/patient/logout">{{ t.logout if (t is defined and t) else 'Logout' }}</a>
+        </div>
+      </div>
+    </nav>
+    <main class="container my-4 patient-page">
+      {% block content %}{% endblock %}
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
+        new bootstrap.Tooltip(el);
+      });
+    </script>
+  </body>
+</html>

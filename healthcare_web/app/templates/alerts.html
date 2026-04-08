@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0">Alerts</h2>
+    <a class="btn btn-sm btn-outline-primary" href="/export/alerts.csv">Export CSV</a>
+  </div>
+
+  <form method="get" class="row g-2 mb-3">
+    <div class="col-md-3">
+      <select class="form-select" name="show">
+        <option value="active" {% if show == 'active' %}selected{% endif %}>Active</option>
+        <option value="all" {% if show == 'all' %}selected{% endif %}>All</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <select class="form-select" name="risk">
+        <option value="">All risks</option>
+        <option value="low" {% if risk == 'low' %}selected{% endif %}>Low</option>
+        <option value="medium" {% if risk == 'medium' %}selected{% endif %}>Medium</option>
+        <option value="high" {% if risk == 'high' %}selected{% endif %}>High</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <button class="btn btn-primary w-100" type="submit">Filter</button>
+    </div>
+  </form>
+  <div class="list-group">
+    {% for i in items %}
+      <div class="list-group-item summary-card">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div>
+            <strong>
+              {{ i.patient.display_name if i.patient else 'Unknown patient' }}
+            </strong>
+            <span class="text-muted small">({{ i.alert.chat_id }})</span>
+          </div>
+          <div class="text-muted small">{{ i.alert.created_at }}</div>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+          <span class="badge risk-badge risk-{{ i.alert.risk_level }}">
+            {{ i.alert.risk_level }}
+          </span>
+          {% if i.last_summary %}
+            <span class="badge bg-light text-dark">Emotion: {{ i.last_summary.emotion }}</span>
+            <span class="chip">Depression: {{ '%.2f'|format(i.last_summary.depression_score) }}</span>
+            <span class="chip">Anxiety: {{ '%.2f'|format(i.last_summary.anxiety_score) }}</span>
+            <span class="chip">Stress: {{ '%.2f'|format(i.last_summary.stress_score) }}</span>
+          {% endif %}
+          <span class="chip">Reason: {{ i.alert.reason }}</span>
+        </div>
+
+        {% if i.last_summary %}
+          <div class="summary-text markdown-body">{{ i.last_summary.summary | markdown }}</div>
+        {% else %}
+          <div class="text-muted">No summary available yet.</div>
+        {% endif %}
+
+        {% if i.patient %}
+          <div class="mt-2">
+            <a class="btn btn-sm btn-outline-primary" href="/patients/{{ i.patient.id }}">
+              Open patient
+            </a>
+            {% if i.alert.resolved_at is none %}
+              <form method="post" action="/alerts/{{ i.alert.id }}/resolve" class="d-inline ms-2">
+                <button class="btn btn-sm btn-outline-success" type="submit">Resolve</button>
+              </form>
+            {% else %}
+              <span class="badge bg-secondary ms-2">Resolved</span>
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="text-muted">No active alerts.</div>
+    {% endfor %}
+  </div>
+{% endblock %}

@@ -1,0 +1,113 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #f7f7fb;
+}
+.card {
+  border-radius: 12px;
+}
+.navbar-brand {
+  font-weight: 600;
+}
+.summary-card {
+  border: 1px solid #e6e6ef;
+  border-radius: 14px;
+  background: #ffffff;
+}
+.risk-badge {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.risk-low {
+  background: #e6f4ea;
+  color: #1e7a3b;
+}
+.risk-medium {
+  background: #fff3cd;
+  color: #8a6d1b;
+}
+.risk-high {
+  background: #fde2e2;
+  color: #a61b1b;
+}
+.chip {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eef2f8;
+  border: 1px solid #dfe7f5;
+  font-size: 12px;
+  color: #2e3a52;
+}
+.characteristic-groups {
+  display: grid;
+  gap: 12px;
+}
+.characteristic-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #425071;
+  margin-bottom: 8px;
+  letter-spacing: 0.01em;
+}
+.characteristic-group {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+  border: 1px solid #e5ebf8;
+  border-left: 4px solid #c7d7fb;
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 2px 8px rgba(36, 77, 160, 0.05);
+}
+.characteristic-group-interests {
+  border-left-color: #6ea8fe;
+}
+.characteristic-group-triggers {
+  border-left-color: #f0ad4e;
+}
+.characteristic-group-emotional {
+  border-left-color: #d98ed6;
+}
+.characteristic-group-resources {
+  border-left-color: #6cc090;
+}
+.characteristic-group-other {
+  border-left-color: #aab4c8;
+}
+.summary-text {
+  font-size: 14px;
+  line-height: 1.45;
+}
+.markdown-body p {
+  margin-bottom: 0.5rem;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.5rem 0 0.5rem 1.25rem;
+}
+.markdown-body strong {
+  font-weight: 600;
+}
+.dialog-scroll {
+  max-height: 520px;
+  overflow: auto;
+}
+.message-row {
+  margin-bottom: 12px;
+}
+.message-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.message-bubble {
+  background: #f6f7fb;
+  border: 1px solid #ececf3;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+.from-user .message-bubble {
+  background: #e9f1ff;
+  border-color: #d7e4ff;
+}
