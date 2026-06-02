@@ -2,7 +2,7 @@
 
 Usage:
     python telegram_bot/src/experiments/evaluate_pipeline_scenarios.py \
-        --input datasets/evaluation/mental_health_evaluation_scenarios_40.csv
+        --input datasets/evaluation/mental_health_evaluation_scenarios_augmented_1000.csv
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TELEGRAM_BOT_ROOT = PROJECT_ROOT / "telegram_bot"
-DEFAULT_INPUT = PROJECT_ROOT / "datasets" / "evaluation" / "mental_health_evaluation_scenarios_40.csv"
+DEFAULT_INPUT = PROJECT_ROOT / "datasets" / "evaluation" / "mental_health_evaluation_scenarios_augmented_1000.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "telegram_bot" / "src" / "experiments" / "results"
 
 
