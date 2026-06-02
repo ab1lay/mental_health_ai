@@ -1,0 +1,32 @@
+{
+  "keyword": {
+    "total_cases": 2200,
+    "risk_match_rate": 0.4395454545454546,
+    "alert_accuracy": 0.8440909090909091,
+    "overall_pass_rate": 0.3977272727272727,
+    "alert_precision": 0.9363057324840764,
+    "alert_recall": 0.30625,
+    "alert_f1": 0.46153846153846156,
+    "true_positive_alerts": 147,
+    "false_positive_alerts": 10,
+    "true_negative_alerts": 1710,
+    "false_negative_alerts": 333,
+    "expected_alerts": 480,
+    "actual_alerts": 157
+  },
+  "llm": {
+    "total_cases": 2200,
+    "risk_match_rate": 0.8613636363636363,
+    "alert_accuracy": 0.9472727272727273,
+    "overall_pass_rate": 0.8413636363636363,
+    "alert_precision": 0.8699186991869918,
+    "alert_recall": 0.8916666666666667,
+    "alert_f1": 0.8806584362139918,
+    "true_positive_alerts": 428,
+    "false_positive_alerts": 64,
+    "true_negative_alerts": 1656,
+    "false_negative_alerts": 52,
+    "expected_alerts": 480,
+    "actual_alerts": 492
+  }
+}

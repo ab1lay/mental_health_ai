@@ -1,0 +1,86 @@
+{
+  "keyword": {
+    "low": {
+      "low": 337,
+      "low-medium": 16,
+      "medium": 36,
+      "medium-high": 18,
+      "high": 0,
+      "error": 0
+    },
+    "low-medium": {
+      "low": 8,
+      "low-medium": 7,
+      "medium": 0,
+      "medium-high": 2,
+      "high": 0,
+      "error": 0
+    },
+    "medium": {
+      "low": 926,
+      "low-medium": 98,
+      "medium": 181,
+      "medium-high": 81,
+      "high": 10,
+      "error": 0
+    },
+    "medium-high": {
+      "low": 3,
+      "low-medium": 0,
+      "medium": 0,
+      "medium-high": 4,
+      "high": 0,
+      "error": 0
+    },
+    "high": {
+      "low": 185,
+      "low-medium": 2,
+      "medium": 51,
+      "medium-high": 88,
+      "high": 147,
+      "error": 0
+    }
+  },
+  "llm": {
+    "low": {
+      "low": 308,
+      "low-medium": 53,
+      "medium": 34,
+      "medium-high": 9,
+      "high": 3,
+      "error": 0
+    },
+    "low-medium": {
+      "low": 11,
+      "low-medium": 6,
+      "medium": 0,
+      "medium-high": 0,
+      "high": 0,
+      "error": 0
+    },
+    "medium": {
+      "low": 195,
+      "low-medium": 716,
+      "medium": 322,
+      "medium-high": 45,
+      "high": 18,
+      "error": 0
+    },
+    "medium-high": {
+      "low": 0,
+      "low-medium": 2,
+      "medium": 5,
+      "medium-high": 0,
+      "high": 0,
+      "error": 0
+    },
+    "high": {
+      "low": 3,
+      "low-medium": 2,
+      "medium": 39,
+      "medium-high": 154,
+      "high": 275,
+      "error": 0
+    }
+  }
+}
