@@ -18,6 +18,7 @@ from config.settings import settings
 from src.core.graph import (
     generate_proactive_checkin,
     run_graph_with_context,
+    should_create_alert,
     summarize_dialog,
 )
 from src.storage.dialog_store import DialogStore
@@ -683,10 +684,16 @@ class TelegramBot:
                     )
                     self.store.set_last_report_user_count(chat_id, user_count)
 
-                    if analysis.risk_level == "high":
+                    if should_create_alert(analysis):
+                        alert_risk_level = str(analysis.risk_level).strip().lower()
+                        alert_reason = (
+                            "depression_score_threshold"
+                            if alert_risk_level in ("medium", "medium_high")
+                            else "high_risk_summary"
+                        )
                         self.store.add_alert(
                             chat_id=chat_id,
-                            reason="high_risk_summary",
+                            reason=alert_reason,
                             risk_level=analysis.risk_level,
                             emotion=analysis.emotion,
                         )

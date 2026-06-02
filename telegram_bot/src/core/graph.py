@@ -54,7 +54,7 @@ def _lang_name(language: str) -> str:
 def _summary_template(language: str) -> str:
     templates = {
         "en": (
-            "**🚨 Urgent Support Alert**\n\n"
+            "**Support Summary**\n\n"
             "**Risk Level:** <High|Medium|Low>\n\n"
             "**Emotional Profile:** <2 sentences describing tone and affect>\n\n"
             "**Status:** <short status>\n\n"
@@ -64,7 +64,7 @@ def _summary_template(language: str) -> str:
             "If the situation escalates, contact emergency services or a crisis professional immediately."
         ),
         "ru": (
-            "**🚨 Urgent Support Alert**\n\n"
+            "**Сводка поддержки**\n\n"
             "**Уровень риска:** <Высокий|Средний|Низкий>\n\n"
             "**Эмоциональный профиль:** <2 предложения о тоне и состоянии>\n\n"
             "**Статус:** <кратко>\n\n"
@@ -74,7 +74,7 @@ def _summary_template(language: str) -> str:
             "Если ситуация ухудшается, немедленно обратитесь в экстренные службы или к кризисному специалисту."
         ),
         "kk": (
-            "**🚨 Шұғыл қолдау туралы хабарлама**\n\n"
+            "**Қолдау қорытындысы**\n\n"
             "**Тәуекел деңгейі:** <Жоғары|Орта|Төмен>\n\n"
             "**Эмоциялық профиль:** <тона мен күйі туралы 2 сөйлем>\n\n"
             "**Мәртебе:** <қысқа>\n\n"
@@ -85,6 +85,42 @@ def _summary_template(language: str) -> str:
         ),
     }
     return templates.get(language, templates["en"])
+
+
+def _summary_title(language: str, risk_level: str) -> str:
+    high_titles = {
+        "en": "**🚨 Urgent Support Alert**",
+        "ru": "**🚨 Срочный сигнал поддержки**",
+        "kk": "**🚨 Шұғыл қолдау туралы хабарлама**",
+    }
+    support_titles = {
+        "en": "**Support Summary**",
+        "ru": "**Сводка поддержки**",
+        "kk": "**Қолдау қорытындысы**",
+    }
+    titles = high_titles if str(risk_level).lower() == "high" else support_titles
+    return titles.get(language, titles["en"])
+
+
+def _apply_summary_title(summary: str, language: str, risk_level: str) -> str:
+    lines = (summary or "").splitlines()
+    title = _summary_title(language, risk_level)
+    known_title_markers = (
+        "Urgent Support Alert",
+        "Support Summary",
+        "Срочный сигнал поддержки",
+        "Сводка поддержки",
+        "Шұғыл қолдау",
+        "Қолдау қорытындысы",
+    )
+    for index, line in enumerate(lines):
+        if line.strip():
+            if any(marker in line for marker in known_title_markers):
+                lines[index] = title
+            else:
+                lines.insert(index, title)
+            return "\n".join(lines).strip()
+    return title
 
 
 def _fallback_user_reply(language: str) -> str:
@@ -143,6 +179,84 @@ def _normalize_parsed_payload(parsed: dict) -> dict:
     elif not isinstance(characteristics, list):
         parsed["key_characteristics"] = []
     return parsed
+
+
+def _combined_signal_text(text: str, history: List[str] | None = None) -> str:
+    chunks = [text or ""]
+    chunks.extend(history or [])
+    return " ".join(chunks).lower()
+
+
+def _has_any_signal(text: str, signals: tuple[str, ...]) -> bool:
+    return any(signal in text for signal in signals)
+
+
+def _risk_rank(risk_level: str) -> int:
+    return {"low": 1, "medium": 2, "medium_high": 3, "high": 4}.get(
+        str(risk_level).strip().lower(),
+        1,
+    )
+
+
+def _raise_risk_at_least(analysis: EmotionResult, minimum: str) -> None:
+    if _risk_rank(analysis.risk_level) < _risk_rank(minimum):
+        analysis.risk_level = minimum
+
+
+def should_create_alert(analysis: EmotionResult) -> bool:
+    risk_level = str(analysis.risk_level).strip().lower()
+    if risk_level == "high":
+        return True
+    if (
+        float(analysis.depression_score) >= 0.7
+        and risk_level in {"medium", "medium_high"}
+    ):
+        return True
+    return False
+
+
+def _calibrate_analysis(
+    analysis: EmotionResult,
+    text: str,
+    language: str,
+    history: List[str] | None = None,
+) -> EmotionResult:
+    """Deterministic safety calibration for known under-classified patterns."""
+    signal_text = _combined_signal_text(text, history)
+
+    social_withdrawal_signals = (
+        "withdraw", "isolat", "avoid everyone", "avoid people", "no one", "alone",
+        "lonely", "emptiness", "empty inside", "feel empty", "hopeless", "no hope",
+        "pointless", "nothing matters",
+        "изолир", "замкнул", "избега", "одинок", "одна", "один", "пусто",
+        "пустота", "безнадеж", "безнадёж", "нет надежды", "нет смысла",
+        "бессмысленно", "ничего не важно",
+        "жалғыз", "оқшау", "үміт жоқ", "үмітсіз", "бос сияқты", "мағына жоқ",
+    )
+    physical_anxiety_signals = (
+        "hands shaking", "hand shaking", "shaky hands", "shaking before",
+        "heart racing", "racing heart", "can't breathe", "cannot breathe",
+        "shortness of breath", "tight chest", "chest tight", "panic",
+        "дрожат руки", "руки тряс", "сердце колот", "сердцеби", "не могу дыш",
+        "тяжело дыш", "сдавило груд", "паник",
+        "қолым діріл", "қолдарым діріл", "жүрегім қатты", "дем ала алмай",
+        "тыныс алу қиын", "кеудем қыс", "үрей",
+    )
+
+    if _has_any_signal(signal_text, social_withdrawal_signals):
+        analysis.depression_score = max(float(analysis.depression_score), 0.7)
+        _raise_risk_at_least(analysis, "medium")
+
+    if _has_any_signal(signal_text, physical_anxiety_signals):
+        analysis.anxiety_score = max(float(analysis.anxiety_score), 0.7)
+        _raise_risk_at_least(analysis, "medium")
+
+    analysis.summary = _apply_summary_title(
+        analysis.summary,
+        language=language,
+        risk_level=analysis.risk_level,
+    )
+    return analysis
 
 
 def _is_generic_characteristic(text: str) -> bool:
@@ -329,6 +443,7 @@ def analyze_node(state: GraphState) -> Dict:
 You are a supportive conversational partner. Based on the latest message and context, produce a warm, natural reply in first person.
 Use {_lang_name(language)} for all user-facing text.
 In summaries, use "Patient" (or "Пациент") instead of "User"/"Пользователь".
+Summary title rule: use "Support Summary" for low/medium risk and "Urgent Support Alert" only for high risk.
 Tone: empathetic, reflective, grounded. Mirror feelings, summarize what you heard, then offer one or two gentle next steps or questions.
 Length: no hard limit, but stay concise and helpful (2 short paragraphs max).
 Directness: medium - clear and caring, not clinical.
@@ -368,6 +483,12 @@ Return JSON only. Do not add any extra text outside the JSON object.
         validated = EmotionResult(**parsed)
         raw_characteristics = list(validated.key_characteristics or [])
         validated.key_characteristics = _sanitize_characteristics(validated.key_characteristics, messages=history, language=language)
+        validated = _calibrate_analysis(
+            validated,
+            text=state["clean_text"],
+            language=language,
+            history=history,
+        )
         logging.info(
             "Characteristics analyze_node: raw=%s sanitized=%s",
             raw_characteristics,
@@ -452,6 +573,7 @@ async def analyze_dialog(messages: List[str], language: str = "en") -> EmotionRe
 You are a psychological assistant. Analyze the dialog (user-only messages) and return JSON with this schema.
 Use {_lang_name(language)} for all user-facing text.
 In summaries, use "Patient" (or "Пациент") instead of "User"/"Пользователь".
+Summary title rule: use "Support Summary" for low/medium risk and "Urgent Support Alert" only for high risk.
 {{
     "emotion": "positive|neutral|negative",
     "risk_level": "low|medium|high",
@@ -482,6 +604,12 @@ User messages:
         result = EmotionResult(**parsed)
         raw_characteristics = list(result.key_characteristics or [])
         result.key_characteristics = _sanitize_characteristics(result.key_characteristics, messages=messages, language=language)
+        result = _calibrate_analysis(
+            result,
+            text="\n".join(messages),
+            language=language,
+            history=messages,
+        )
         logging.info(
             "Characteristics analyze_dialog: raw=%s sanitized=%s",
             raw_characteristics,

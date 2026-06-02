@@ -1,0 +1,17 @@
+{
+  "llm": {
+    "total_cases": 1000,
+    "risk_match_rate": 0.78,
+    "alert_accuracy": 0.905,
+    "overall_pass_rate": 0.73,
+    "alert_precision": 0.7451737451737451,
+    "alert_recall": 0.8693693693693694,
+    "alert_f1": 0.8024948024948025,
+    "true_positive_alerts": 193,
+    "false_positive_alerts": 66,
+    "true_negative_alerts": 712,
+    "false_negative_alerts": 29,
+    "expected_alerts": 222,
+    "actual_alerts": 259
+  }
+}

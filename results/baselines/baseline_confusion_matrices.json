@@ -1,0 +1,44 @@
+{
+  "llm": {
+    "low": {
+      "low": 106,
+      "low-medium": 37,
+      "medium": 31,
+      "medium-high": 7,
+      "high": 4,
+      "error": 0
+    },
+    "low-medium": {
+      "low": 8,
+      "low-medium": 3,
+      "medium": 0,
+      "medium-high": 0,
+      "high": 0,
+      "error": 0
+    },
+    "medium": {
+      "low": 142,
+      "low-medium": 157,
+      "medium": 220,
+      "medium-high": 48,
+      "high": 15,
+      "error": 0
+    },
+    "medium-high": {
+      "low": 0,
+      "low-medium": 2,
+      "medium": 5,
+      "medium-high": 0,
+      "high": 0,
+      "error": 0
+    },
+    "high": {
+      "low": 3,
+      "low-medium": 1,
+      "medium": 15,
+      "medium-high": 47,
+      "high": 149,
+      "error": 0
+    }
+  }
+}
