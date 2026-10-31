@@ -42,10 +42,17 @@ def encode_session(payload: dict, secret: str, ttl_seconds: int = 3600) -> str:
     return token
 
 
+SIG_LEN = hashlib.sha256().digest_size
+
+
 def decode_session(token: str, secret: str) -> Optional[dict]:
     try:
         raw = base64.urlsafe_b64decode(token.encode('ascii'))
-        body_raw, sig = raw.rsplit(b'.', 1)
+        # The signature is raw bytes and may itself contain b'.', so split by
+        # its fixed length instead of searching for the separator.
+        if len(raw) <= SIG_LEN or raw[-SIG_LEN - 1:-SIG_LEN] != b'.':
+            return None
+        body_raw, sig = raw[:-SIG_LEN - 1], raw[-SIG_LEN:]
         expected = _sign(body_raw, secret)
         if not hmac.compare_digest(sig, expected):
             return None

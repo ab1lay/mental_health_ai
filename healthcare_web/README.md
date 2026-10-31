@@ -9,9 +9,9 @@ pip install -r healthcare_web/requirements.txt
 
 2) Add to .env:
 ```
-WEB_SECRET_KEY=change-me
+WEB_SECRET_KEY=<long random string>
 ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=change-me
+ADMIN_PASSWORD=<strong password>
 ```
 
 3) Run:

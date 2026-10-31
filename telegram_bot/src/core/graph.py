@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Dict, List, TypedDict
 
-from langchain.schema import HumanMessage
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
@@ -25,20 +25,29 @@ class GraphState(TypedDict, total=False):
     response: str
 
 
+REASONING_MODEL_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+
+
+def is_reasoning_model(model: str) -> bool:
+    return str(model).strip().lower().startswith(REASONING_MODEL_PREFIXES)
+
+
+def _make_llm(temperature: float) -> ChatOpenAI:
+    # Reasoning models reject sampling parameters such as `temperature`
+    # (langchain-openai strips it automatically only for gpt-5), so they get
+    # `reasoning_effort` instead; classic models keep `temperature`.
+    if is_reasoning_model(settings.model):
+        tuning = {"reasoning_effort": settings.reasoning_effort}
+    else:
+        tuning = {"temperature": temperature}
+    return ChatOpenAI(model=settings.model, api_key=settings.openai_api_key, **tuning)
+
+
 # Model for user-facing replies
-llm_reply = ChatOpenAI(
-    model=settings.model,
-    api_key=settings.openai_api_key,
-    temperature=0.5,
-)
+llm_reply = _make_llm(temperature=0.5)
 
 # Model for structured analysis (JSON)
-llm_struct = ChatOpenAI(
-    model=settings.model,
-    api_key=settings.openai_api_key,
-    temperature=0.1,
-    model_kwargs={"response_format": {"type": "json_object"}},
-)
+llm_struct = _make_llm(temperature=0.1).bind(response_format={"type": "json_object"})
 
 graph = StateGraph(GraphState)
 
@@ -183,7 +192,15 @@ def _normalize_parsed_payload(parsed: dict) -> dict:
 
 def _combined_signal_text(text: str, history: List[str] | None = None) -> str:
     chunks = [text or ""]
-    chunks.extend(history or [])
+    # Only the patient's own words count as signals: assistant replies such as
+    # "you are not alone" must not raise the patient's risk.
+    for line in history or []:
+        line = line or ""
+        if line.startswith("assistant:"):
+            continue
+        if line.startswith("user:"):
+            line = line[len("user:"):]
+        chunks.append(line)
     return " ".join(chunks).lower()
 
 
@@ -191,11 +208,68 @@ def _has_any_signal(text: str, signals: tuple[str, ...]) -> bool:
     return any(signal in text for signal in signals)
 
 
+# Explicit self-harm / suicidal ideation. Matching any of these forces high risk
+# regardless of what the model returned (and even when the model call failed).
+_CRISIS_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\b(?:i\s+)?want\s+to\s+die\b",
+        r"\b(?:kill|hurt|harm|cut)\s+myself\b",
+        r"\bend\s+(?:my|it)\s+(?:life|all)\b",
+        r"\btake\s+my\s+(?:own\s+)?life\b",
+        r"\b(?:don'?t|do\s+not)\s+want\s+to\s+(?:live|be\s+alive|wake\s+up)\b",
+        r"\b(?:no|zero)\s+reason\s+to\s+live\b",
+        r"\bsuicid",
+        r"\bself[-\s]?harm",
+        r"\bbetter\s+off\s+dead\b",
+        r"не\s+хоч\w*\s+(?:больше\s+)?жить",
+        r"хоч\w*\s+умереть",
+        r"поконч\w*\s+(?:с\s+собой|со\s+всем)",
+        r"(?:убить|убью)\s+себя",
+        r"суицид",
+        r"самоубийств",
+        r"(?:причин\w*|наносить|нанести)\s+себе\s+вред",
+        r"навредить\s+себе",
+        r"порезать\s+себя|режу\s+себя",
+        r"нет\s+смысла\s+жить",
+        r"лучше\s+бы\s+меня\s+не\s+было",
+        r"өмір\s+сүргім\s+келмейді",
+        r"өлгім\s+келеді",
+        r"өзімді\s+өлтір",
+        r"өзіме\s+қол\s+жұмса",
+        r"өмірдің\s+мәні\s+жоқ",
+    )
+)
+
+
+def has_crisis_signal(text: str) -> bool:
+    lowered = (text or "").lower().replace("’", "'")
+    return any(pattern.search(lowered) for pattern in _CRISIS_PATTERNS)
+
+
 def _risk_rank(risk_level: str) -> int:
     return {"low": 1, "medium": 2, "medium_high": 3, "high": 4}.get(
         str(risk_level).strip().lower(),
         1,
     )
+
+
+def _clamp_score(value) -> float:
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_analysis_values(analysis: EmotionResult) -> None:
+    """Coerce model output ("High", "medium-high", 1.3) to the expected vocabulary."""
+    risk = str(analysis.risk_level or "").strip().lower().replace("-", "_").replace(" ", "_")
+    analysis.risk_level = risk if risk in {"low", "medium", "medium_high", "high"} else "low"
+    emotion = str(analysis.emotion or "").strip().lower()
+    analysis.emotion = emotion if emotion in {"positive", "neutral", "negative"} else "neutral"
+    analysis.depression_score = _clamp_score(analysis.depression_score)
+    analysis.anxiety_score = _clamp_score(analysis.anxiety_score)
+    analysis.stress_score = _clamp_score(analysis.stress_score)
 
 
 def _raise_risk_at_least(analysis: EmotionResult, minimum: str) -> None:
@@ -222,20 +296,25 @@ def _calibrate_analysis(
     history: List[str] | None = None,
 ) -> EmotionResult:
     """Deterministic safety calibration for known under-classified patterns."""
+    _normalize_analysis_values(analysis)
     signal_text = _combined_signal_text(text, history)
 
+    # Short ambiguous tokens ("один", "одна", "alone") are deliberately not used:
+    # they match "один раз", "однажды", "leave me alone" and caused false alerts.
     social_withdrawal_signals = (
-        "withdraw", "isolat", "avoid everyone", "avoid people", "no one", "alone",
-        "lonely", "emptiness", "empty inside", "feel empty", "hopeless", "no hope",
-        "pointless", "nothing matters",
-        "изолир", "замкнул", "избега", "одинок", "одна", "один", "пусто",
-        "пустота", "безнадеж", "безнадёж", "нет надежды", "нет смысла",
+        "withdraw", "isolat", "avoid everyone", "avoid people", "no one cares",
+        "no one understands", "feel alone", "all alone", "so alone",
+        "completely alone", "lonely", "emptiness", "empty inside", "feel empty",
+        "hopeless", "no hope", "pointless", "nothing matters",
+        "изолир", "замкнул", "избега", "одинок", "одиночеств", "совсем один",
+        "совсем одна", "никому не нужн", "пустот", "внутри пусто", "на душе пусто",
+        "безнадеж", "безнадёж", "нет надежды", "нет смысла",
         "бессмысленно", "ничего не важно",
         "жалғыз", "оқшау", "үміт жоқ", "үмітсіз", "бос сияқты", "мағына жоқ",
     )
     physical_anxiety_signals = (
         "hands shaking", "hand shaking", "shaky hands", "shaking before",
-        "heart racing", "racing heart", "can't breathe", "cannot breathe",
+        "heart racing", "racing heart", "can't breathe", "cant breathe", "cannot breathe",
         "shortness of breath", "tight chest", "chest tight", "panic",
         "дрожат руки", "руки тряс", "сердце колот", "сердцеби", "не могу дыш",
         "тяжело дыш", "сдавило груд", "паник",
@@ -250,6 +329,12 @@ def _calibrate_analysis(
     if _has_any_signal(signal_text, physical_anxiety_signals):
         analysis.anxiety_score = max(float(analysis.anxiety_score), 0.7)
         _raise_risk_at_least(analysis, "medium")
+
+    # Crisis check looks at the current text only, so one past message does not
+    # keep every later reply in crisis mode.
+    if has_crisis_signal(text):
+        analysis.depression_score = max(float(analysis.depression_score), 0.8)
+        _raise_risk_at_least(analysis, "high")
 
     analysis.summary = _apply_summary_title(
         analysis.summary,
@@ -389,7 +474,7 @@ def _sanitize_characteristics(raw_items: List[str], messages: List[str] | None =
                 rejected_details.append({"value": part[:160], "reason": "non_specific_fallback"})
 
     if specific:
-        logging.info(
+        logging.debug(
             "Characteristics sanitize: specific=%s fallback=%s generic_rejected=%s selected=%s",
             len(specific),
             len(fallback_general),
@@ -401,7 +486,7 @@ def _sanitize_characteristics(raw_items: List[str], messages: List[str] | None =
     # If model failed to produce concrete traits, derive lightweight specifics from user messages.
     heuristic = _extract_fallback_characteristics_from_messages(messages or [], language=language)
     if heuristic:
-        logging.info(
+        logging.debug(
             "Characteristics sanitize: no specific from model, using heuristic fallback=%s generic_rejected=%s",
             heuristic[:3],
             len(generic_rejected),
@@ -410,13 +495,36 @@ def _sanitize_characteristics(raw_items: List[str], messages: List[str] | None =
 
     # Only if absolutely nothing concrete found, keep one non-generic fallback.
     selected = fallback_general[:1]
-    logging.info(
+    logging.debug(
         "Characteristics sanitize: selected fallback=%s generic_rejected=%s rejected_details=%s",
         selected,
         len(generic_rejected),
         rejected_details[:5],
     )
     return selected
+
+
+def _parse_emotion_result(content: str) -> EmotionResult:
+    raw = (content or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.lower().startswith("json"):
+            raw = raw[len("json") :].lstrip("\n")
+    return EmotionResult(**_normalize_parsed_payload(json.loads(raw)))
+
+
+def _fallback_analysis(user_reply: str) -> EmotionResult:
+    return EmotionResult(
+        emotion="neutral",
+        risk_level="low",
+        depression_score=0.0,
+        anxiety_score=0.0,
+        stress_score=0.0,
+        summary="Automatic analysis is unavailable for this fragment; please review the dialog manually.",
+        profile_note="analysis unavailable",
+        user_reply=user_reply,
+        key_characteristics=[],
+    )
 
 
 def analyze_node(state: GraphState) -> Dict:
@@ -472,41 +580,27 @@ Return a JSON object following this schema (JSON only, no extra text):
 Message: "{state["clean_text"]}"
 Return JSON only. Do not add any extra text outside the JSON object.
 """
-    response = llm_struct.invoke([HumanMessage(content=prompt)])
     try:
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.lower().startswith("json"):
-                raw = raw[len("json") :].lstrip("\n")
-        parsed = _normalize_parsed_payload(json.loads(raw))
-        validated = EmotionResult(**parsed)
+        response = llm_struct.invoke([HumanMessage(content=prompt)])
+        validated = _parse_emotion_result(response.content)
         raw_characteristics = list(validated.key_characteristics or [])
         validated.key_characteristics = _sanitize_characteristics(validated.key_characteristics, messages=history, language=language)
-        validated = _calibrate_analysis(
-            validated,
-            text=state["clean_text"],
-            language=language,
-            history=history,
-        )
-        logging.info(
+        logging.debug(
             "Characteristics analyze_node: raw=%s sanitized=%s",
             raw_characteristics,
             validated.key_characteristics,
         )
     except Exception:
-        logging.warning("Failed to parse emotion analysis: %s", response.content)
-        validated = EmotionResult(
-            emotion="neutral",
-            risk_level="low",
-            depression_score=0.0,
-            anxiety_score=0.0,
-            stress_score=0.0,
-            summary="I hear you and I am here with you. Share more if you want.",
-            profile_note="calm tone",
-            user_reply=_fallback_user_reply(language),
-            key_characteristics=[],
-        )
+        logging.exception("Emotion analysis failed, using fallback result")
+        validated = _fallback_analysis(_fallback_user_reply(language))
+    # Calibration also runs on the fallback so explicit crisis signals are
+    # never lost when the model call or JSON parsing fails.
+    validated = _calibrate_analysis(
+        validated,
+        text=state["clean_text"],
+        language=language,
+        history=history,
+    )
     # Guardrail: if model returns placeholder/meta instead of a real reply.
     if validated.user_reply and any(
         token in validated.user_reply.lower()
@@ -547,13 +641,14 @@ async def run_graph(text: str, history: List[str] | None = None, language: str =
     return result["response"]
 
 
-async def run_graph_with_context(
+async def run_graph_with_analysis(
     text: str,
     history: List[str] | None = None,
     language: str = "en",
     has_specialist: bool = False,
     preferences: Dict | None = None,
-) -> str:
+) -> tuple[str, EmotionResult]:
+    """Returns the user-facing reply together with the per-message analysis."""
     result = await compiled_graph.ainvoke(
         {
             "text": text,
@@ -563,7 +658,24 @@ async def run_graph_with_context(
             "preferences": preferences or {},
         }
     )
-    return result["response"]
+    return result["response"], result["analysis"]
+
+
+async def run_graph_with_context(
+    text: str,
+    history: List[str] | None = None,
+    language: str = "en",
+    has_specialist: bool = False,
+    preferences: Dict | None = None,
+) -> str:
+    response, _ = await run_graph_with_analysis(
+        text,
+        history=history,
+        language=language,
+        has_specialist=has_specialist,
+        preferences=preferences,
+    )
+    return response
 
 
 async def analyze_dialog(messages: List[str], language: str = "en") -> EmotionResult:
@@ -593,42 +705,25 @@ Summary title rule: use "Support Summary" for low/medium risk and "Urgent Suppor
 User messages:
 {formatted}
 """
-    response = llm_struct.invoke([HumanMessage(content=prompt)])
     try:
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.lower().startswith("json"):
-                raw = raw[len("json") :].lstrip("\n")
-        parsed = _normalize_parsed_payload(json.loads(raw))
-        result = EmotionResult(**parsed)
+        response = await llm_struct.ainvoke([HumanMessage(content=prompt)])
+        result = _parse_emotion_result(response.content)
         raw_characteristics = list(result.key_characteristics or [])
         result.key_characteristics = _sanitize_characteristics(result.key_characteristics, messages=messages, language=language)
-        result = _calibrate_analysis(
-            result,
-            text="\n".join(messages),
-            language=language,
-            history=messages,
-        )
-        logging.info(
+        logging.debug(
             "Characteristics analyze_dialog: raw=%s sanitized=%s",
             raw_characteristics,
             result.key_characteristics,
         )
-        return result
     except Exception:
-        logging.warning("Failed to parse dialog analysis: %s", response.content)
-        return EmotionResult(
-            emotion="neutral",
-            risk_level="low",
-            depression_score=0.0,
-            anxiety_score=0.0,
-            stress_score=0.0,
-            summary="I hear you and I am here with you. Share more if you want.",
-            profile_note="calm tone",
-            user_reply="I am here. We can think together about what might help.",
-            key_characteristics=[],
-        )
+        logging.exception("Dialog analysis failed, using fallback result")
+        result = _fallback_analysis("")
+    return _calibrate_analysis(
+        result,
+        text="\n".join(messages),
+        language=language,
+        history=messages,
+    )
 
 
 async def summarize_dialog(messages: List[str], language: str = "en") -> tuple[EmotionResult, str]:
@@ -676,7 +771,7 @@ Recent context (if any):
 {history_block if history_block else "- no recent context"}
 """
     try:
-        response = llm_reply.invoke([HumanMessage(content=prompt)])
+        response = await llm_reply.ainvoke([HumanMessage(content=prompt)])
         text = (response.content or "").strip()
         return text or _fallback_proactive_checkin(language)
     except Exception:

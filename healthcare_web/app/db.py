@@ -315,6 +315,17 @@ def list_patients_for_user(user: Dict) -> List[Dict]:
         return [dict(r) for r in rows]
 
 
+def user_can_access_patient(user: Dict, patient: Dict) -> bool:
+    if user.get('role') == 'admin':
+        return True
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM assignments WHERE patient_id = ? AND user_id = ?;",
+            (patient['id'], user['id']),
+        ).fetchone()
+        return row is not None
+
+
 def get_patient(patient_id: int) -> Optional[Dict]:
     with get_conn() as conn:
         row = conn.execute(
@@ -344,7 +355,7 @@ def get_patient_language(chat_id: str) -> str:
             (chat_id,),
         ).fetchone()
         lang = str(row["language"]).lower() if row and row["language"] else "en"
-        return lang if lang in {"en", "ru"} else "en"
+        return lang if lang in {"en", "ru", "kk"} else "en"
 
 
 def list_summaries(chat_id: str, limit: int = 50) -> List[Dict]:
@@ -385,7 +396,7 @@ def list_patient_characteristics(chat_id: str, limit: int = 20) -> List[str]:
     def select_best(items: List[str]) -> List[str]:
         specific = [i for i in items if not _is_generic_characteristic(i) and _is_specific_characteristic(i)]
         if specific:
-            logging.info(
+            logging.debug(
                 "Characteristics web select: chat_id=%s specific=%s fallback=0 total=%s",
                 chat_id,
                 len(specific),
@@ -393,7 +404,7 @@ def list_patient_characteristics(chat_id: str, limit: int = 20) -> List[str]:
             )
             return specific
         fallback = [i for i in items if not _is_generic_characteristic(i)]
-        logging.info(
+        logging.debug(
             "Characteristics web select: chat_id=%s specific=0 fallback=%s total=%s selected=%s",
             chat_id,
             len(fallback),
@@ -592,52 +603,55 @@ def list_patient_preference_history(chat_id: str, limit: int = 50) -> List[Dict]
 def consume_patient_portal_token(code: str) -> str | None:
     if not code:
         return None
+    normalized = code.strip().lower()
     with get_conn() as conn:
-        row = conn.execute(
+        if not _table_exists(conn, "patient_portal_tokens"):
+            return None
+        # Single conditional UPDATE so two concurrent logins cannot both use the code.
+        cur = conn.execute(
             """
-            SELECT code, chat_id, expires_at, used_at
-            FROM patient_portal_tokens
-            WHERE code = ?;
+            UPDATE patient_portal_tokens
+            SET used_at = CURRENT_TIMESTAMP
+            WHERE code = ? AND used_at IS NULL AND datetime('now') <= datetime(expires_at);
             """,
-            (code.strip().lower(),),
-        ).fetchone()
-        if not row:
-            return None
-        if row["used_at"]:
-            return None
-        expired = conn.execute(
-            "SELECT 1 WHERE datetime('now') > datetime(?);",
-            (row["expires_at"],),
-        ).fetchone()
-        if expired:
-            return None
-        conn.execute(
-            "UPDATE patient_portal_tokens SET used_at = CURRENT_TIMESTAMP WHERE code = ?;",
-            (row["code"],),
+            (normalized,),
         )
         conn.commit()
-        return str(row["chat_id"])
+        if cur.rowcount != 1:
+            return None
+        row = conn.execute(
+            "SELECT chat_id FROM patient_portal_tokens WHERE code = ?;",
+            (normalized,),
+        ).fetchone()
+        return str(row["chat_id"]) if row else None
 
 
-def list_alerts(active_only: bool = True, limit: int = 100) -> List[Dict]:
+def _chat_filter(chat_ids: Optional[List[str]]) -> tuple[str, list]:
+    """SQL fragment restricting rows to the given chat ids (None = no restriction)."""
+    if chat_ids is None:
+        return "", []
+    if not chat_ids:
+        return " AND 0", []
+    placeholders = ", ".join("?" for _ in chat_ids)
+    return f" AND chat_id IN ({placeholders})", [str(c) for c in chat_ids]
+
+
+def list_alerts(
+    active_only: bool = True,
+    limit: int = 100,
+    chat_ids: Optional[List[str]] = None,
+) -> List[Dict]:
     with get_conn() as conn:
         if not _table_exists(conn, "alerts"):
             return []
+        where = "WHERE 1=1"
         if active_only:
-            rows = conn.execute(
-                """
-                SELECT * FROM alerts
-                WHERE resolved_at IS NULL
-                ORDER BY id DESC
-                LIMIT ?;
-                """,
-                (limit,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM alerts ORDER BY id DESC LIMIT ?;",
-                (limit,),
-            ).fetchall()
+            where += " AND resolved_at IS NULL"
+        chat_sql, params = _chat_filter(chat_ids)
+        rows = conn.execute(
+            f"SELECT * FROM alerts {where}{chat_sql} ORDER BY id DESC LIMIT ?;",
+            (*params, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -696,12 +710,14 @@ def count_patients() -> int:
         return int(row['c']) if row else 0
 
 
-def count_active_alerts() -> int:
+def count_active_alerts(chat_ids: Optional[List[str]] = None) -> int:
     with get_conn() as conn:
         if not _table_exists(conn, "alerts"):
             return 0
+        chat_sql, params = _chat_filter(chat_ids)
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM alerts WHERE resolved_at IS NULL;"
+            f"SELECT COUNT(*) AS c FROM alerts WHERE resolved_at IS NULL{chat_sql};",
+            params,
         ).fetchone()
         return int(row['c']) if row else 0
 
@@ -828,7 +844,7 @@ def list_timeline(chat_id: str, limit: int = 100) -> List[Dict]:
 def create_invite(user_id: int, ttl_hours: int = 48) -> str:
     with get_conn() as conn:
         code = conn.execute(
-            "SELECT hex(randomblob(3)) AS code;"
+            "SELECT hex(randomblob(4)) AS code;"
         ).fetchone()["code"]
         conn.execute(
             """

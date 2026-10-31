@@ -1,0 +1,4 @@
+-r telegram_bot/requirements.txt
+-r healthcare_web/requirements.txt
+pytest>=8
+httpx==0.26.0

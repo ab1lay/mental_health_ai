@@ -375,6 +375,14 @@ class DialogStore:
                 message=f"Summary recorded (risk={risk_level}, emotion={emotion}).",
             )
 
+    def has_active_alert(self, chat_id: int | str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM alerts WHERE chat_id = ? AND resolved_at IS NULL LIMIT 1;",
+                (str(chat_id),),
+            ).fetchone()
+        return row is not None
+
     def link_patient_with_invite(
         self,
         code: str,
@@ -382,6 +390,9 @@ class DialogStore:
         display_name: str,
         username: str | None = None,
     ) -> tuple[bool, str]:
+        """Returns (ok, status) where status is one of: invalid, used, expired, linked."""
+        # Codes are generated as uppercase hex; patients often type them in lowercase.
+        code = (code or "").strip().upper()
         with self._connect() as conn:
             invite = conn.execute(
                 """
@@ -392,16 +403,16 @@ class DialogStore:
                 (code,),
             ).fetchone()
             if not invite:
-                return False, "Invalid or expired code."
+                return False, "invalid"
             if invite["used_by_chat_id"]:
-                return False, "This invite code is already used."
+                return False, "used"
             # SQLite stores timestamps as strings; compare in SQL for simplicity.
             expired = conn.execute(
                 "SELECT 1 WHERE datetime('now') > datetime(?);",
                 (invite["expires_at"],),
             ).fetchone()
             if expired:
-                return False, "This invite code has expired."
+                return False, "expired"
 
             chat_id_str = str(chat_id)
             patient = conn.execute(
@@ -427,10 +438,10 @@ class DialogStore:
             conn.execute(
                 """
                 UPDATE invites
-                SET used_by_chat_id = ?, used_at = CURRENT_TIMESTAMP
+                SET used_by_chat_id = ?, used_by_username = ?, used_at = CURRENT_TIMESTAMP
                 WHERE code = ?;
                 """,
-                (chat_id_str, code),
+                (chat_id_str, username, code),
             )
             conn.commit()
             self.add_event(
@@ -438,7 +449,7 @@ class DialogStore:
                 event_type="linked_to_specialist",
                 message="Patient linked to specialist via invite.",
             )
-            return True, "Linked successfully."
+            return True, "linked"
 
     def set_invite_used_by_username(self, code: str, username: str | None) -> None:
         if not username:
@@ -450,7 +461,7 @@ class DialogStore:
                 SET used_by_username = ?
                 WHERE code = ?;
                 """,
-                (username, code),
+                (username, (code or "").strip().upper()),
             )
             conn.commit()
 
@@ -663,7 +674,7 @@ class DialogStore:
 
         normalized = specific[:8] if specific else fallback_general[:1]
         if not normalized:
-            logging.info(
+            logging.debug(
                 "Characteristics DB save skipped: chat_id=%s raw=%s generic_rejected=%s rejected_details=%s",
                 chat_id_str,
                 characteristics,
@@ -683,7 +694,7 @@ class DialogStore:
                     (chat_id_str, item),
                 )
             conn.commit()
-        logging.info(
+        logging.debug(
             "Characteristics DB saved: chat_id=%s raw_count=%s specific=%s fallback=%s rejected=%s saved=%s",
             chat_id_str,
             len(characteristics),

@@ -1,9 +1,13 @@
+import html
+import logging
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 import csv
 import io
@@ -35,9 +39,10 @@ from .db import (
     add_audit_event,
     get_last_summary,
     get_patient_by_chat_id,
-    count_patients,
+    get_alert_by_id,
     count_active_alerts,
     create_invite,
+    deactivate_invite,
     list_invites,
     clear_summaries_for_chat,
     clear_messages_for_chat,
@@ -46,6 +51,7 @@ from .db import (
     list_timeline,
     upsert_patient_preferences,
     consume_patient_portal_token,
+    user_can_access_patient,
 )
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -57,12 +63,20 @@ if local_env.exists():
 else:
     load_dotenv(root_env)
 
-SECRET_KEY = os.getenv('WEB_SECRET_KEY', 'change-me')
+SECRET_KEY = os.getenv('WEB_SECRET_KEY', '')
+if not SECRET_KEY:
+    # Sessions stay valid only until restart, but nobody can forge them with a known default.
+    SECRET_KEY = secrets.token_urlsafe(32)
+    logging.warning('WEB_SECRET_KEY is not set; using a random key, sessions reset on restart.')
+elif SECRET_KEY == 'change-me' or len(SECRET_KEY) < 16:
+    logging.warning('WEB_SECRET_KEY is weak; set a long random value in production.')
 SESSION_TTL_SECONDS = int(os.getenv('WEB_SESSION_TTL_SECONDS', '86400'))
 PATIENT_SESSION_TTL_SECONDS = int(os.getenv('PATIENT_WEB_SESSION_TTL_SECONDS', '604800'))
 DEBUG_ENABLED = os.getenv('DEBUG', 'false').lower() in ('1', 'true', 'yes', 'on')
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+# Set COOKIE_SECURE=true when the dashboard is served over HTTPS.
+COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'false').lower() in ('1', 'true', 'yes', 'on')
 
 app = FastAPI(title='Healthcare Web')
 app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'app' / 'static')), name='static')
@@ -114,6 +128,50 @@ def _patient_texts(language: str) -> dict:
             "style_reflective": "Рефлексивный",
             "style_practical": "Практический",
             "style_motivational": "Мотивирующий",
+        }
+    if language == "kk":
+        return {
+            "portal_title": "Пациент порталы",
+            "logout": "Шығу",
+            "page_title": "Ботты жекелендіру",
+            "page_subtitle": "Боттың сізбен қалай сөйлесетінін және өзі қаншалықты жиі жаза алатынын баптаңыз.",
+            "chat_id": "Chat ID",
+            "saved": "Баптаулар сақталды.",
+            "tone": "Сөйлеу мәнері",
+            "tone_tip": "Қарым-қатынас стилін анықтайды. Қолдаушы = көбірек эмпатия, Байсалды = бейтарап әрі бірқалыпты, Тура = қысқа әрі нақты.",
+            "response_length": "Жауап ұзындығы",
+            "response_length_tip": "Қысқа = қысқа жауаптар, Орташа = теңгерімді, Толық = көбірек мәлімет пен түсіндірме.",
+            "support_style": "Қолдау түрі",
+            "support_style_tip": "Рефлексивті = көбірек қабылдау мен көңіл бөлу, Практикалық = нақты қадамдар, Ынталандырушы = көбірек жігер беру.",
+            "proactive_frequency": "Боттың өзі жазу жиілігі (сағат)",
+            "proactive_frequency_tip": "Бот қайтадан бірінші болып жаза алғанға дейінгі ең аз үзіліс.",
+            "quiet_start": "Тыныш сағаттар: басы (HH:MM)",
+            "quiet_start_tip": "Бот бірінші болып жазбайтын кезеңнің басы. 24 сағаттық формат: HH:MM.",
+            "quiet_end": "Тыныш сағаттар: соңы (HH:MM)",
+            "quiet_end_tip": "Тыныш кезеңнің соңы. Мысалы: 22:00–08:00 түнгі хабарламаларды болдырмайды.",
+            "topics_to_avoid": "Қозғамайтын тақырыптар (міндетті емес)",
+            "topics_to_avoid_tip": "Өзіңіз сұрамасаңыз, бот бұл тақырыптарды өзі қозғамайды.",
+            "topics_placeholder": "Мысалы: өзі жазғанда отбасы туралы айтпау",
+            "allow_proactive": "Ботқа бірінші болып жазуға рұқсат беру",
+            "allow_proactive_tip": "Өшірулі болса, бот тек сіздің хабарламаларыңызға жауап береді, диалогты өзі бастамайды.",
+            "save": "Баптауларды сақтау",
+            "history_title": "Өзгерістер тарихы",
+            "history_empty": "Әзірге өзгеріс жоқ.",
+            "history_who": "Кім",
+            "history_when": "Қашан",
+            "history_what": "Не өзгерді",
+            "history_actor_patient": "Пациент",
+            "history_actor_specialist": "Маман",
+            "history_actor_system": "Жүйе",
+            "tone_supportive": "Қолдаушы",
+            "tone_calm": "Байсалды",
+            "tone_direct": "Тура",
+            "len_short": "Қысқа",
+            "len_medium": "Орташа",
+            "len_detailed": "Толық",
+            "style_reflective": "Рефлексивті",
+            "style_practical": "Практикалық",
+            "style_motivational": "Ынталандырушы",
         }
     return {
         "portal_title": "Patient Portal",
@@ -324,9 +382,14 @@ def _group_characteristics(items: list[str], language: str = "en") -> list[dict]
         if grouped[name]
     ]
 
-templates.env.filters["markdown"] = lambda text: Markup(
-    md.markdown(_cleanup_summary(text or ""), extensions=["extra", "sane_lists"])
-)
+def _render_markdown(text: str) -> Markup:
+    # Summaries are LLM output influenced by patient messages, so raw HTML is
+    # escaped before rendering; markdown syntax (**bold**, lists) still works.
+    escaped = html.escape(_cleanup_summary(text or ""), quote=False)
+    return Markup(md.markdown(escaped, extensions=["extra", "sane_lists"]))
+
+
+templates.env.filters["markdown"] = _render_markdown
 
 
 @app.on_event('startup')
@@ -357,6 +420,23 @@ def require_user(request: Request) -> dict:
     return user
 
 
+def _scope_chat_ids(user: dict, patients: Optional[list] = None) -> Optional[list]:
+    """Chat ids visible to the user; None means unrestricted (admin)."""
+    if user.get('role') == 'admin':
+        return None
+    if patients is None:
+        patients = list_patients_for_user(user)
+    return [p['chat_id'] for p in patients]
+
+
+def get_accessible_patient(patient_id: int, user: dict) -> dict:
+    patient = get_patient(patient_id)
+    # 404 rather than 403 so specialists cannot probe which patient ids exist.
+    if not patient or not user_can_access_patient(user, patient):
+        raise HTTPException(status_code=404)
+    return patient
+
+
 def get_current_patient(request: Request) -> Optional[dict]:
     token = request.cookies.get('patient_session')
     if not token:
@@ -380,10 +460,13 @@ def require_patient(request: Request) -> dict:
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     if exc.status_code == 401:
-        if request.url.path.startswith('/patient'):
+        path = request.url.path
+        # '/patients/...' belongs to specialists, only '/patient' and '/patient/...' to patients.
+        if path == '/patient' or path.startswith('/patient/'):
             return RedirectResponse(url='/patient/login', status_code=302)
         return RedirectResponse(url='/login', status_code=302)
-    raise exc
+    # Re-raising here turned every 400/403/404 into a 500; use the default response.
+    return await default_http_exception_handler(request, exc)
 
 
 @app.get('/login', response_class=HTMLResponse)
@@ -398,7 +481,10 @@ async def login_submit(request: Request, email: str = Form(...), password: str =
         return templates.TemplateResponse('login.html', {'request': request, 'error': 'Invalid credentials'})
     token = encode_session({'user_id': user['id']}, SECRET_KEY, ttl_seconds=SESSION_TTL_SECONDS)
     response = RedirectResponse(url='/', status_code=302)
-    response.set_cookie('session', token, httponly=True, samesite='lax')
+    response.set_cookie(
+        'session', token, httponly=True, samesite='lax',
+        secure=COOKIE_SECURE, max_age=SESSION_TTL_SECONDS,
+    )
     return response
 
 
@@ -438,7 +524,10 @@ async def patient_login_submit(request: Request, code: str = Form(...)):
         ttl_seconds=PATIENT_SESSION_TTL_SECONDS,
     )
     response = RedirectResponse(url='/patient/preferences', status_code=302)
-    response.set_cookie('patient_session', token, httponly=True, samesite='lax')
+    response.set_cookie(
+        'patient_session', token, httponly=True, samesite='lax',
+        secure=COOKIE_SECURE, max_age=PATIENT_SESSION_TTL_SECONDS,
+    )
     return response
 
 
@@ -521,7 +610,8 @@ async def dashboard(
     user: dict = Depends(require_user),
 ):
     patients = list_patients_for_user(user)
-    active_alerts_list = list_alerts(active_only=True)
+    scope = _scope_chat_ids(user, patients)
+    active_alerts_list = list_alerts(active_only=True, chat_ids=scope)
     active_alert_chat_ids = {a["chat_id"] for a in active_alerts_list}
     items = []
     for p in patients[:10]:
@@ -541,8 +631,8 @@ async def dashboard(
             'request': request,
             'user': user,
             'debug_enabled': DEBUG_ENABLED,
-            'patient_count': count_patients(),
-            'active_alerts': count_active_alerts(),
+            'patient_count': len(patients),
+            'active_alerts': count_active_alerts(chat_ids=scope),
             'recent_summaries': items,
             'hot_patients': hot_patients[:10],
         },
@@ -565,9 +655,9 @@ async def patients_page(
             q_lower = q.lower()
             if q_lower not in p["display_name"].lower() and q_lower not in p["chat_id"].lower():
                 continue
-        if risk and last and last.get("risk_level") != risk:
+        if risk and (not last or last.get("risk_level") != risk):
             continue
-        if emotion and last and last.get("emotion") != emotion:
+        if emotion and (not last or last.get("emotion") != emotion):
             continue
         items.append({
             'patient': p,
@@ -581,9 +671,7 @@ async def patients_page(
 
 @app.get('/patients/{patient_id}', response_class=HTMLResponse)
 async def patient_detail(request: Request, patient_id: int, user: dict = Depends(require_user)):
-    patient = get_patient(patient_id)
-    if not patient:
-        raise HTTPException(status_code=404)
+    patient = get_accessible_patient(patient_id, user)
     summaries = list_summaries(patient['chat_id'])
     messages = list_messages(patient['chat_id'])
     patient_language = get_patient_language(patient['chat_id'])
@@ -612,7 +700,7 @@ async def patient_detail(request: Request, patient_id: int, user: dict = Depends
 @app.get('/alerts', response_class=HTMLResponse)
 async def alerts_page(request: Request, user: dict = Depends(require_user), show: str = "active", risk: str | None = None):
     active_only = show != "all"
-    alerts = list_alerts(active_only=active_only)
+    alerts = list_alerts(active_only=active_only, chat_ids=_scope_chat_ids(user))
     items = []
     for a in alerts:
         patient = get_patient_by_chat_id(a["chat_id"])
@@ -635,10 +723,14 @@ async def alerts_page(request: Request, user: dict = Depends(require_user), show
 @app.post('/alerts/{alert_id}/resolve')
 async def alerts_resolve(alert_id: int, user: dict = Depends(require_user)):
     # Resolve and log under the patient's chat_id so it shows in History.
-    from .db import get_alert_by_id
     alert = get_alert_by_id(alert_id)
-    resolve_alert(alert_id)
-    if alert:
+    if not alert:
+        raise HTTPException(status_code=404)
+    patient = get_patient_by_chat_id(str(alert["chat_id"]))
+    if user.get('role') != 'admin' and (not patient or not user_can_access_patient(user, patient)):
+        raise HTTPException(status_code=404)
+    if not alert.get("resolved_at"):
+        resolve_alert(alert_id)
         add_audit_event(
             chat_id=str(alert["chat_id"]),
             event_type="alert_resolved",
@@ -681,7 +773,6 @@ async def invites_create(request: Request, user: dict = Depends(require_user)):
 
 @app.post('/invites/{code}/deactivate')
 async def invites_deactivate(code: str, user: dict = Depends(require_user)):
-    from .db import deactivate_invite
     deactivate_invite(code, user['id'])
     return RedirectResponse(url='/invites', status_code=302)
 
@@ -692,9 +783,7 @@ async def debug_clear_patient_summaries(patient_id: int, user: dict = Depends(re
         raise HTTPException(status_code=404)
     if user.get('role') != 'admin':
         raise HTTPException(status_code=403)
-    patient = get_patient(patient_id)
-    if not patient:
-        raise HTTPException(status_code=404)
+    patient = get_accessible_patient(patient_id, user)
     clear_summaries_for_chat(patient['chat_id'])
     return RedirectResponse(url=f'/patients/{patient_id}', status_code=302)
 
@@ -705,9 +794,7 @@ async def debug_clear_patient_messages(patient_id: int, user: dict = Depends(req
         raise HTTPException(status_code=404)
     if user.get('role') != 'admin':
         raise HTTPException(status_code=403)
-    patient = get_patient(patient_id)
-    if not patient:
-        raise HTTPException(status_code=404)
+    patient = get_accessible_patient(patient_id, user)
     clear_messages_for_chat(patient['chat_id'])
     return RedirectResponse(url=f'/patients/{patient_id}', status_code=302)
 
@@ -718,9 +805,7 @@ async def debug_clear_patient_timeline(patient_id: int, user: dict = Depends(req
         raise HTTPException(status_code=404)
     if user.get('role') != 'admin':
         raise HTTPException(status_code=403)
-    patient = get_patient(patient_id)
-    if not patient:
-        raise HTTPException(status_code=404)
+    patient = get_accessible_patient(patient_id, user)
     clear_timeline_for_chat(patient['chat_id'])
     return RedirectResponse(url=f'/patients/{patient_id}', status_code=302)
 
@@ -733,28 +818,24 @@ async def api_patients(user: dict = Depends(require_user)):
 
 @app.get('/api/patients/{patient_id}/summaries')
 async def api_summaries(patient_id: int, user: dict = Depends(require_user)):
-    patient = get_patient(patient_id)
-    if not patient:
-        raise HTTPException(status_code=404)
+    patient = get_accessible_patient(patient_id, user)
     return JSONResponse(list_summaries(patient['chat_id']))
 
 
 @app.get('/api/patients/{patient_id}/messages')
 async def api_messages(patient_id: int, user: dict = Depends(require_user)):
-    patient = get_patient(patient_id)
-    if not patient:
-        raise HTTPException(status_code=404)
+    patient = get_accessible_patient(patient_id, user)
     return JSONResponse(list_messages(patient['chat_id']))
 
 
 @app.get('/api/alerts')
 async def api_alerts(user: dict = Depends(require_user)):
-    return JSONResponse(list_alerts(active_only=True))
+    return JSONResponse(list_alerts(active_only=True, chat_ids=_scope_chat_ids(user)))
 
 
 @app.get('/export/alerts.csv')
 async def export_alerts_csv(user: dict = Depends(require_user)):
-    alerts = list_alerts(active_only=False)
+    alerts = list_alerts(active_only=False, chat_ids=_scope_chat_ids(user))
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["id", "chat_id", "reason", "risk_level", "created_at", "resolved_at"])
@@ -766,9 +847,7 @@ async def export_alerts_csv(user: dict = Depends(require_user)):
 
 @app.get('/patients/{patient_id}/export.csv')
 async def export_patient_csv(patient_id: int, user: dict = Depends(require_user)):
-    patient = get_patient(patient_id)
-    if not patient:
-        raise HTTPException(status_code=404)
+    patient = get_accessible_patient(patient_id, user)
     summaries = list_summaries(patient["chat_id"])
     messages = list_messages(patient["chat_id"])
     output = io.StringIO()

@@ -1,9 +1,8 @@
-python-telegram-bot==20.8
-langchain==0.2.12
-langchain-community==0.2.11
-langgraph==0.2.23
-langchain-openai==0.1.16
-openai==1.47.0
+python-telegram-bot[job-queue,webhooks]==20.8
+langchain-core==1.7.3
+langchain-openai==1.7.3
+langgraph==1.2.19
+openai==3.42.0
 python-dotenv==1.0.1
 pandas==2.2.3
 tqdm==4.66.5

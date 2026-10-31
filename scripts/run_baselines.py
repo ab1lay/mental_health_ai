@@ -146,7 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language-col", default="")
     parser.add_argument("--run-keyword", action="store_true")
     parser.add_argument("--run-llm", action="store_true")
-    parser.add_argument("--model", default=os.getenv("MODEL", "gpt-4o-mini"))
+    parser.add_argument("--model", default=os.getenv("MODEL", "gpt-6.1-sol"))
     parser.add_argument("--llm-cache", type=Path, default=None)
     parser.add_argument("--llm-limit", type=int, default=0, help="Optional cap for LLM calls. 0 means all.")
     return parser.parse_args()
@@ -355,9 +355,14 @@ def llm_predict(client: Any, model: str, text: str) -> tuple[str, bool]:
         "}\n\n"
         f"Text:\n{text}"
     )
+    # Reasoning models (gpt-5+, gpt-6+, o-series) reject `temperature`.
+    if model.lower().startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")):
+        sampling = {"reasoning_effort": os.getenv("REASONING_EFFORT", "low")}
+    else:
+        sampling = {"temperature": 0}
     response = client.chat.completions.create(
         model=model,
-        temperature=0,
+        **sampling,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system},

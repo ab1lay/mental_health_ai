@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -15,13 +15,38 @@ from telegram.ext import (
 )
 
 from config.settings import settings
+from src.core.emotion_schema import EmotionResult
 from src.core.graph import (
     generate_proactive_checkin,
-    run_graph_with_context,
+    run_graph_with_analysis,
     should_create_alert,
     summarize_dialog,
 )
 from src.storage.dialog_store import DialogStore
+
+
+SUPPORTED_LANGUAGES = ("en", "ru", "kk")
+
+REGISTRATION_STATE_KEYS = (
+    "awaiting_consent",
+    "awaiting_full_name",
+    "awaiting_age",
+    "awaiting_gender",
+    "awaiting_phone",
+    "awaiting_trusted",
+    "awaiting_notes",
+    "awaiting_link_code",
+    "profile_full_name",
+    "profile_age",
+    "profile_gender",
+    "profile_phone",
+    "profile_trusted",
+)
+
+
+def _utcnow() -> datetime:
+    # SQLite CURRENT_TIMESTAMP is UTC; compare against naive UTC, not local time.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class TelegramBot:
@@ -52,24 +77,33 @@ class TelegramBot:
     async def on_startup(self, app: Application) -> None:
         """Log bot startup."""
         logging.info("Bot is starting...")
-        if settings.proactive_enabled and app.job_queue:
-            app.job_queue.run_repeating(
-                self._run_proactive_outreach,
-                interval=max(60, settings.proactive_check_interval_minutes * 60),
-                first=30,
-                name="proactive_outreach",
+        if not settings.proactive_enabled:
+            return
+        if not app.job_queue:
+            logging.warning(
+                "Proactive outreach is enabled but JobQueue is unavailable. "
+                "Install python-telegram-bot[job-queue] to enable it."
             )
-            logging.info(
-                "Scheduled proactive outreach job: every %s min, idle threshold=%s h",
-                settings.proactive_check_interval_minutes,
-                settings.proactive_idle_hours,
-            )
+            return
+        app.job_queue.run_repeating(
+            self._run_proactive_outreach,
+            interval=max(60, settings.proactive_check_interval_minutes * 60),
+            first=30,
+            name="proactive_outreach",
+        )
+        logging.info(
+            "Scheduled proactive outreach job: every %s min, idle threshold=%s h",
+            settings.proactive_check_interval_minutes,
+            settings.proactive_idle_hours,
+        )
 
     async def on_shutdown(self, app: Application) -> None:
         """Log bot shutdown."""
         logging.info("Bot is stopping.")
 
     async def _run_proactive_outreach(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Pre-filter with the smallest possible interval; the per-chat smart
+        # interval (>= 6 h) is applied below.
         candidates = self.store.list_inactive_chats(
             idle_hours=1,
             min_user_messages=settings.proactive_min_user_messages,
@@ -106,7 +140,7 @@ class TelegramBot:
                 reference_dt = last_outreach_at
             if not reference_dt:
                 continue
-            if (datetime.now() - reference_dt).total_seconds() < smart_hours * 3600:
+            if (_utcnow() - reference_dt).total_seconds() < smart_hours * 3600:
                 continue
             recent = self.store.get_recent_messages(chat_id, limit=8)
             history = [f"{m['role']}: {m['text']}" for m in recent]
@@ -126,12 +160,19 @@ class TelegramBot:
                 )
             except Exception:
                 logging.exception("Failed to send proactive check-in to chat_id=%s", chat_id_str)
+                # Still mark the attempt, otherwise a blocked bot is retried every cycle.
+                self.store.mark_proactive_outreach(chat_id)
 
     def _get_language(self, chat_id: int) -> str:
-        return self.store.get_language(chat_id)
+        language = self.store.get_language(chat_id)
+        return language if language in SUPPORTED_LANGUAGES else "en"
 
     def _has_specialist(self, chat_id: int) -> bool:
         return self.store.has_specialist(chat_id)
+
+    @staticmethod
+    def _localized(texts: dict, language: str) -> str:
+        return texts.get(language, texts["en"])
 
     def _consent_text(self, language: str) -> str:
         texts = {
@@ -147,60 +188,150 @@ class TelegramBot:
                 "and allow a specialist to view this information on the platform?\n\n"
                 "Reply: yes / no"
             ),
+            "kk": (
+                "Тіркелу алдында деректерді өңдеуге келісіміңіз қажет. "
+                "Сіз өз байланыс деректеріңізді және сенімді адамның байланысын беретініңізді, "
+                "әрі маманға бұл ақпаратты платформада көруге рұқсат беретініңізді растайсыз ба?\n\n"
+                "Жауап беріңіз: иә / жоқ"
+            ),
         }
-        return texts.get(language, texts["en"])
+        return self._localized(texts, language)
 
     def _prompt_text(self, key: str, language: str) -> str:
         prompts = {
             "full_name": {
                 "ru": "Введите ваше полное имя.",
                 "en": "Enter your full name.",
+                "kk": "Толық аты-жөніңізді енгізіңіз.",
             },
             "age": {
                 "ru": "Введите ваш возраст (число).",
                 "en": "Enter your age (number).",
+                "kk": "Жасыңызды енгізіңіз (сан).",
             },
             "gender": {
                 "ru": "Выберите пол кнопкой ниже.",
                 "en": "Choose gender using the buttons below.",
+                "kk": "Төмендегі батырма арқылы жынысыңызды таңдаңыз.",
             },
             "phone": {
                 "ru": "Введите ваш номер телефона (обязателен).",
                 "en": "Enter your phone number (required).",
+                "kk": "Телефон нөміріңізді енгізіңіз (міндетті).",
             },
             "trusted": {
                 "ru": "Введите контакт доверенного человека (телефон/имя).",
                 "en": "Enter a trusted contact (phone/name).",
+                "kk": "Сенімді адамның байланысын енгізіңіз (телефон/аты).",
             },
             "notes": {
                 "ru": "Дополнительные примечания (необязательно). Напишите '-' чтобы пропустить.",
                 "en": "Additional notes (optional). Type '-' to skip.",
+                "kk": "Қосымша ескертпелер (міндетті емес). Өткізіп жіберу үшін '-' деп жазыңыз.",
             },
             "registered": {
                 "ru": "Регистрация завершена. Спасибо!",
                 "en": "Registration complete. Thank you!",
+                "kk": "Тіркелу аяқталды. Рақмет!",
             },
             "invalid_age": {
                 "ru": "Возраст должен быть числом от 5 до 120. Попробуйте снова.",
                 "en": "Age must be a number between 5 and 120. Try again.",
+                "kk": "Жас 5 пен 120 аралығындағы сан болуы керек. Қайталап көріңіз.",
             },
             "invalid_gender": {
                 "ru": "Пожалуйста выберите: мужской / женский / другое.",
                 "en": "Please choose: male / female / other.",
+                "kk": "Таңдаңыз: ер / әйел / басқа.",
             },
             "invalid_phone": {
                 "ru": "Номер телефона некорректен. Введите в формате +XXXXXXXXXXX.",
                 "en": "Phone number is invalid. Enter in +XXXXXXXXXXX format.",
+                "kk": "Телефон нөмірі қате. +XXXXXXXXXXX форматында енгізіңіз.",
             },
             "consent_required": {
-                "ru": "Без согласия регистрация невозможна.",
-                "en": "Consent is required to register.",
+                "ru": (
+                    "Без согласия регистрация невозможна. Вы можете продолжить общение без регистрации "
+                    "и зарегистрироваться позже командой /start."
+                ),
+                "en": (
+                    "Consent is required to register. You can keep chatting without registration "
+                    "and register later with /start."
+                ),
+                "kk": (
+                    "Келісімсіз тіркелу мүмкін емес. Тіркелмей-ақ сөйлесуді жалғастыра аласыз, "
+                    "кейін /start командасымен тіркеле аласыз."
+                ),
+            },
+            "link_prompt": {
+                "ru": "Введите код приглашения от специалиста, чтобы привязать аккаунт.",
+                "en": "Please enter the doctor invite code to link your account.",
+                "kk": "Аккаунтты байланыстыру үшін маманның шақыру кодын енгізіңіз.",
+            },
+            "link_linked": {
+                "ru": "Аккаунт успешно привязан к специалисту.",
+                "en": "Linked successfully.",
+                "kk": "Аккаунт маманға сәтті байланыстырылды.",
+            },
+            "link_invalid": {
+                "ru": "Неверный код приглашения.",
+                "en": "Invalid invite code.",
+                "kk": "Шақыру коды қате.",
+            },
+            "link_used": {
+                "ru": "Этот код приглашения уже использован.",
+                "en": "This invite code is already used.",
+                "kk": "Бұл шақыру коды бұрын пайдаланылған.",
+            },
+            "link_expired": {
+                "ru": "Срок действия кода приглашения истёк.",
+                "en": "This invite code has expired.",
+                "kk": "Шақыру кодының мерзімі өтіп кеткен.",
+            },
+            "language_set": {
+                "ru": "Язык: русский",
+                "en": "Language: English",
+                "kk": "Тіл: қазақша",
+            },
+            "error": {
+                "ru": "Извините, что-то пошло не так. Попробуйте ещё раз.",
+                "en": "Sorry, something went wrong. Please try again.",
+                "kk": "Кешіріңіз, қате орын алды. Қайталап көріңіз.",
             },
         }
-        return prompts.get(key, {}).get(language, prompts.get(key, {}).get("en", ""))
+        texts = prompts.get(key, {})
+        return texts.get(language, texts.get("en", ""))
+
+    def _language_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("English", callback_data="lang:en"),
+                    InlineKeyboardButton("Русский", callback_data="lang:ru"),
+                    InlineKeyboardButton("Қазақша", callback_data="lang:kk"),
+                ]
+            ]
+        )
+
+    def _gender_keyboard(self, language: str) -> InlineKeyboardMarkup:
+        labels = {
+            "en": ("Male", "Female", "Other"),
+            "ru": ("Мужской", "Женский", "Другое"),
+            "kk": ("Ер", "Әйел", "Басқа"),
+        }
+        male, female, other = self._localized(labels, language)
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(male, callback_data="gender:male"),
+                    InlineKeyboardButton(female, callback_data="gender:female"),
+                    InlineKeyboardButton(other, callback_data="gender:other"),
+                ]
+            ]
+        )
 
     def _normalize_phone(self, text: str) -> str:
-        phone = text.strip().replace(" ", "").replace("-", "")
+        phone = text.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
         if phone.startswith("00"):
             phone = "+" + phone[2:]
         return phone
@@ -216,22 +347,28 @@ class TelegramBot:
 
     def _parse_gender(self, text: str) -> str | None:
         value = text.strip().lower()
-        if value in ("male", "m", "man", "м", "муж", "мужской"):
+        if value in ("male", "m", "man", "м", "муж", "мужской", "ер"):
             return "male"
-        if value in ("female", "f", "woman", "ж", "жен", "женский"):
+        if value in ("female", "f", "woman", "ж", "жен", "женский", "әйел"):
             return "female"
-        if value in ("other", "o", "другое", "другой", "иной"):
+        if value in ("other", "o", "другое", "другой", "иной", "басқа"):
             return "other"
         return None
 
     def _portal_text(self, language: str, link: str, token: str, ttl_minutes: int) -> str:
         if language == "ru":
-            ttl_text = "1 ???" if ttl_minutes == 60 else f"{ttl_minutes} ?????"
             return (
-                "???????? ?????? ???????????? ????????:\n"
+                "Откройте портал персональных настроек:\n"
                 f"{link}\n\n"
-                f"??? ?????: {token}\n"
-                f"??? ?????????: {ttl_text}."
+                f"Код для входа: {token}\n"
+                f"Код действует {ttl_minutes} мин."
+            )
+        if language == "kk":
+            return (
+                "Жеке баптаулар порталын ашыңыз:\n"
+                f"{link}\n\n"
+                f"Кіру коды: {token}\n"
+                f"Код {ttl_minutes} минут жарамды."
             )
         return (
             "Open your personal settings portal:\n"
@@ -245,9 +382,15 @@ class TelegramBot:
             return False
         if not re.match(r"^\d{2}:\d{2}$", start) or not re.match(r"^\d{2}:\d{2}$", end):
             return False
+        # Quiet hours are entered as wall-clock time, so compare with server local time.
         now = datetime.now().time()
-        start_t = datetime.strptime(start, "%H:%M").time()
-        end_t = datetime.strptime(end, "%H:%M").time()
+        try:
+            start_t = datetime.strptime(start, "%H:%M").time()
+            end_t = datetime.strptime(end, "%H:%M").time()
+        except ValueError:
+            return False
+        if start_t == end_t:
+            return False
         if start_t < end_t:
             return start_t <= now < end_t
         # Overnight range (e.g., 22:00 -> 08:00)
@@ -268,7 +411,7 @@ class TelegramBot:
             return None
 
     def _summary_severity_score(self, summary: dict) -> float:
-        risk_map = {"low": 0.2, "medium": 0.55, "high": 0.9}
+        risk_map = {"low": 0.2, "medium": 0.55, "medium_high": 0.7, "high": 0.9}
         risk = risk_map.get(str(summary.get("risk_level", "low")).lower(), 0.2)
         dep = float(summary.get("depression_score") or 0.0)
         anx = float(summary.get("anxiety_score") or 0.0)
@@ -282,7 +425,7 @@ class TelegramBot:
             return base
         latest = summaries[0]
         latest_risk = str(latest.get("risk_level", "low")).lower()
-        risk_multiplier = {"high": 0.6, "medium": 0.85, "low": 1.1}.get(latest_risk, 1.0)
+        risk_multiplier = {"high": 0.6, "medium_high": 0.75, "medium": 0.85, "low": 1.1}.get(latest_risk, 1.0)
         trend_multiplier = 1.0
         if len(summaries) >= 2:
             current_score = self._summary_severity_score(summaries[0])
@@ -293,46 +436,30 @@ class TelegramBot:
             elif delta < -0.12:
                 trend_multiplier *= 1.25
             prev_risk = str(summaries[1].get("risk_level", "low")).lower()
-            risk_rank = {"low": 1, "medium": 2, "high": 3}
+            risk_rank = {"low": 1, "medium": 2, "medium_high": 3, "high": 4}
             if risk_rank.get(latest_risk, 1) > risk_rank.get(prev_risk, 1):
                 trend_multiplier *= 0.85
         smart = int(round(base * risk_multiplier * trend_multiplier))
         return max(6, min(168, smart))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        context.user_data["awaiting_language"] = True
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("English", callback_data="lang:en"),
-                    InlineKeyboardButton("Русский", callback_data="lang:ru"),
-                ]
-            ]
-        )
-        await update.message.reply_text(
-            "Choose language / Выберите язык:",
-            reply_markup=keyboard,
-        )
+        # Restarting must not leave the user stuck in a half-finished registration step.
+        for key in REGISTRATION_STATE_KEYS:
+            context.user_data.pop(key, None)
+        await self.language_start(update, context)
 
     async def language_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["awaiting_language"] = True
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("English", callback_data="lang:en"),
-                    InlineKeyboardButton("Русский", callback_data="lang:ru"),
-                ]
-            ]
-        )
         await update.message.reply_text(
-            "Choose language / Выберите язык:",
-            reply_markup=keyboard,
+            "Choose language / Выберите язык / Тілді таңдаңыз:",
+            reply_markup=self._language_keyboard(),
         )
 
     async def link_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id if update.effective_chat else 0
         context.user_data["awaiting_link_code"] = True
         await update.message.reply_text(
-            "Please enter the doctor invite code to link your account."
+            self._prompt_text("link_prompt", self._get_language(chat_id))
         )
 
     async def portal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -361,11 +488,11 @@ class TelegramBot:
 
         if data.startswith("lang:") and context.user_data.get("awaiting_language"):
             lang = data.split(":", 1)[1]
-            if lang not in ("en", "ru"):
+            if lang not in SUPPORTED_LANGUAGES:
                 return
             self.store.set_language(chat_id, lang)
             context.user_data["awaiting_language"] = False
-            await query.edit_message_text(f"Language set to: {lang}")
+            await query.edit_message_text(self._prompt_text("language_set", lang))
             profile = self.store.get_patient_profile(chat_id)
             if profile and profile.get("phone") and profile.get("consent_at"):
                 return
@@ -379,9 +506,7 @@ class TelegramBot:
             if gender not in ("male", "female", "other"):
                 await query.message.reply_text(self._prompt_text("invalid_gender", language))
                 return
-            context.user_data["profile_gender"] = gender
-            context.user_data["awaiting_gender"] = False
-            context.user_data["awaiting_phone"] = True
+            self._accept_gender(context, gender)
             await query.edit_message_text(self._prompt_text("gender", language))
             await query.message.reply_text(self._prompt_text("phone", language))
             return
@@ -389,37 +514,85 @@ class TelegramBot:
         if data.startswith("crisis:"):
             language = self._get_language(chat_id)
             action = data.split(":", 1)[1]
+            phone = settings.crisis_phone
             if action == "call":
                 await query.message.reply_text(
-                    "Позвоните 112." if language == "ru" else "Call 112."
+                    self._localized(
+                        {
+                            "en": f"Call {phone} (emergency services).",
+                            "ru": f"Позвоните {phone} (экстренные службы).",
+                            "kk": f"{phone} нөміріне қоңырау шалыңыз (жедел қызметтер).",
+                        },
+                        language,
+                    )
                 )
                 return
             if action == "safe":
                 await query.message.reply_text(
-                    "Хорошо. Спасибо, что сообщили." if language == "ru" else "Okay. Thank you for letting me know."
+                    self._localized(
+                        {
+                            "en": "Okay. Thank you for letting me know.",
+                            "ru": "Хорошо. Спасибо, что сообщили.",
+                            "kk": "Жақсы. Хабарлағаныңызға рақмет.",
+                        },
+                        language,
+                    )
+                )
+                self.store.add_event(
+                    chat_id=str(chat_id),
+                    event_type="crisis_marked_safe",
+                    message="Patient pressed 'I'm safe' after a crisis prompt.",
                 )
                 return
             if action == "trusted":
                 profile = self.store.get_patient_profile(chat_id)
-                phone = profile.get("trusted_contact") if profile else None
-                if phone:
-                    await query.message.reply_text(
-                        f"Контакт доверенного: {phone}" if language == "ru" else f"Trusted contact: {phone}"
+                contact = profile.get("trusted_contact") if profile else None
+                if contact:
+                    text = self._localized(
+                        {
+                            "en": f"Trusted contact: {contact}",
+                            "ru": f"Контакт доверенного: {contact}",
+                            "kk": f"Сенімді адамның байланысы: {contact}",
+                        },
+                        language,
                     )
                 else:
-                    await query.message.reply_text(
-                        "Доверенный контакт не найден. Вы можете добавить его через регистрацию."
-                        if language == "ru"
-                        else "Trusted contact not found. You can add it during registration."
+                    text = self._localized(
+                        {
+                            "en": "Trusted contact not found. You can add it during registration (/start).",
+                            "ru": "Доверенный контакт не найден. Вы можете добавить его через регистрацию (/start).",
+                            "kk": "Сенімді байланыс табылмады. Оны тіркелу кезінде қосуға болады (/start).",
+                        },
+                        language,
                     )
+                await query.message.reply_text(text)
                 return
             if action == "specialist":
-                await query.message.reply_text(
-                    "Если у вас есть контакт специалиста, пожалуйста, свяжитесь с ним сейчас."
-                    if language == "ru"
-                    else "If you have your specialist's contact, please reach out now."
-                )
+                if self._has_specialist(chat_id):
+                    text = self._localized(
+                        {
+                            "en": "Your specialist has received an alert. If you have their contact, you can also reach out directly now.",
+                            "ru": "Ваш специалист получил сигнал. Если у вас есть его контакт, можете написать ему прямо сейчас.",
+                            "kk": "Маманыңызға белгі жіберілді. Егер оның байланысы болса, оған қазір тікелей жаза аласыз.",
+                        },
+                        language,
+                    )
+                else:
+                    text = self._localized(
+                        {
+                            "en": "If you have your specialist's contact, please reach out now. You can link a specialist with /link.",
+                            "ru": "Если у вас есть контакт специалиста, пожалуйста, свяжитесь с ним сейчас. Привязать специалиста можно командой /link.",
+                            "kk": "Егер маманның байланысы болса, оған қазір хабарласыңыз. Маманды /link командасымен байланыстыруға болады.",
+                        },
+                        language,
+                    )
+                await query.message.reply_text(text)
                 return
+
+    def _accept_gender(self, context: ContextTypes.DEFAULT_TYPE, gender: str) -> None:
+        context.user_data["profile_gender"] = gender
+        context.user_data["awaiting_gender"] = False
+        context.user_data["awaiting_phone"] = True
 
     def _crisis_text(self, language: str, has_specialist: bool) -> str:
         texts = {
@@ -433,63 +606,100 @@ class TelegramBot:
                 "If you feel unsafe, please seek urgent help.\n\n"
                 "You can choose one of the options below."
             ),
+            "kk": (
+                "Қазір сізге өте ауыр сияқты. Мен осындамын.\n"
+                "Егер қауіпсіздігіңізге қатер болса, шұғыл көмекке жүгініңіз.\n\n"
+                "Төмендегі нұсқалардың бірін таңдай аласыз."
+            ),
         }
-        base = texts.get(language, texts["en"])
+        base = self._localized(texts, language)
         if has_specialist:
-            extra = (
-                "\n\nМогу передать вашему специалисту сигнал или вы можете написать ему напрямую."
-                if language == "ru"
-                else "\n\nI can notify your specialist, or you can message them directly."
-            )
-            return base + extra
+            extra = {
+                "ru": "\n\nВаш специалист увидит этот сигнал; вы также можете написать ему напрямую.",
+                "en": "\n\nYour specialist will see this signal; you can also message them directly.",
+                "kk": "\n\nМаманыңыз бұл белгіні көреді; оған тікелей жаза да аласыз.",
+            }
+            return base + self._localized(extra, language)
         return base
 
     def _crisis_keyboard(self, language: str) -> InlineKeyboardMarkup:
-        if language == "ru":
-            return InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("Позвонить 112", callback_data="crisis:call")],
-                    [InlineKeyboardButton("Написать доверенному", callback_data="crisis:trusted")],
-                    [InlineKeyboardButton("Связаться со специалистом", callback_data="crisis:specialist")],
-                    [InlineKeyboardButton("Я в безопасности", callback_data="crisis:safe")],
-                ]
-            )
+        phone = settings.crisis_phone
+        labels = {
+            "ru": (f"Позвонить {phone}", "Написать доверенному", "Связаться со специалистом", "Я в безопасности"),
+            "en": ("Call emergency", "Message trusted contact", "Contact specialist", "I'm safe"),
+            "kk": (f"{phone} нөміріне қоңырау", "Сенімді адамға жазу", "Маманмен байланысу", "Мен қауіпсіздемін"),
+        }
+        call, trusted, specialist, safe = self._localized(labels, language)
         return InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Call emergency", callback_data="crisis:call")],
-                [InlineKeyboardButton("Message trusted contact", callback_data="crisis:trusted")],
-                [InlineKeyboardButton("Contact specialist", callback_data="crisis:specialist")],
-                [InlineKeyboardButton("I'm safe", callback_data="crisis:safe")],
+                [InlineKeyboardButton(call, callback_data="crisis:call")],
+                [InlineKeyboardButton(trusted, callback_data="crisis:trusted")],
+                [InlineKeyboardButton(specialist, callback_data="crisis:specialist")],
+                [InlineKeyboardButton(safe, callback_data="crisis:safe")],
             ]
         )
 
+    def _create_alert_once(self, chat_id: int, reason: str, analysis: EmotionResult) -> bool:
+        """Creates an alert unless the patient already has an unresolved one."""
+        if self.store.has_active_alert(chat_id):
+            return False
+        self.store.add_alert(
+            chat_id=chat_id,
+            reason=reason,
+            risk_level=analysis.risk_level,
+            emotion=analysis.emotion,
+        )
+        return True
+
+    async def _send_crisis_prompt(self, update: Update, chat_id: int, language: str) -> None:
+        await update.message.reply_text(
+            self._crisis_text(language, self._has_specialist(chat_id)),
+            reply_markup=self._crisis_keyboard(language),
+        )
+
     async def process_message(self, chat_id: int, text: str, history: Optional[List[str]] = None) -> Optional[str]:
-        language = self.store.get_language(chat_id)
+        language = self._get_language(chat_id)
         preferences = self.store.get_patient_preferences(chat_id)
-        return await run_graph_with_context(
+        response, _ = await run_graph_with_analysis(
             text,
             history=history or [],
             language=language,
             has_specialist=self._has_specialist(chat_id),
             preferences=preferences,
         )
+        return response
+
+    @staticmethod
+    def _display_name(update: Update) -> str:
+        if update.effective_user:
+            return (
+                update.effective_user.full_name
+                or update.effective_user.username
+                or "Patient"
+            )
+        return "Patient"
 
     async def handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
+        if not update.message or not update.message.text:
+            return
+        chat_id = update.effective_chat.id if update.effective_chat else 0
         try:
             text = update.message.text
-            chat_id = update.effective_chat.id if update.effective_chat else 0
 
             if context.user_data.get("awaiting_language"):
-                await update.message.reply_text("Please use the language buttons.")
+                await update.message.reply_text(
+                    "Please use the language buttons / Выберите язык кнопками / Тілді батырмамен таңдаңыз.",
+                    reply_markup=self._language_keyboard(),
+                )
                 return
 
             if context.user_data.get("awaiting_consent"):
                 language = self._get_language(chat_id)
                 value = text.strip().lower()
-                if value in ("yes", "y", "да", "согласен", "согласна"):
-                    context.user_data["awaiting_consent"] = False
+                context.user_data["awaiting_consent"] = False
+                if value in ("yes", "y", "да", "согласен", "согласна", "иә", "ия", "келісемін"):
                     context.user_data["awaiting_full_name"] = True
                     await update.message.reply_text(self._prompt_text("full_name", language))
                 else:
@@ -517,21 +727,23 @@ class TelegramBot:
                 context.user_data["profile_age"] = age
                 context.user_data["awaiting_age"] = False
                 context.user_data["awaiting_gender"] = True
-                await update.message.reply_text(self._prompt_text("gender", language))
+                await update.message.reply_text(
+                    self._prompt_text("gender", language),
+                    reply_markup=self._gender_keyboard(language),
+                )
                 return
 
             if context.user_data.get("awaiting_gender"):
                 language = self._get_language(chat_id)
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton("Male", callback_data="gender:male"),
-                            InlineKeyboardButton("Female", callback_data="gender:female"),
-                            InlineKeyboardButton("Other", callback_data="gender:other"),
-                        ]
-                    ]
+                gender = self._parse_gender(text)
+                if gender:
+                    self._accept_gender(context, gender)
+                    await update.message.reply_text(self._prompt_text("phone", language))
+                    return
+                await update.message.reply_text(
+                    self._prompt_text("gender", language),
+                    reply_markup=self._gender_keyboard(language),
                 )
-                await update.message.reply_text(self._prompt_text("gender", language), reply_markup=keyboard)
                 return
 
             if context.user_data.get("awaiting_phone"):
@@ -557,15 +769,9 @@ class TelegramBot:
             if context.user_data.get("awaiting_notes"):
                 language = self._get_language(chat_id)
                 notes = text.strip()
-                if notes in ("-", "skip", "нет", "no"):
+                if notes.lower() in ("-", "skip", "нет", "no", "жоқ"):
                     notes = None
-                display_name = "Patient"
-                if update.effective_user:
-                    display_name = (
-                        update.effective_user.full_name
-                        or update.effective_user.username
-                        or "Patient"
-                    )
+                display_name = self._display_name(update)
                 self.store.upsert_patient_profile(
                     chat_id=chat_id,
                     display_name=display_name,
@@ -576,39 +782,24 @@ class TelegramBot:
                     trusted_contact=context.user_data.get("profile_trusted", ""),
                     notes=notes,
                 )
-                for key in [
-                    "awaiting_notes",
-                    "profile_full_name",
-                    "profile_age",
-                    "profile_gender",
-                    "profile_phone",
-                    "profile_trusted",
-                ]:
+                for key in REGISTRATION_STATE_KEYS:
                     context.user_data.pop(key, None)
                 await update.message.reply_text(self._prompt_text("registered", language))
                 return
 
             if context.user_data.get("awaiting_link_code"):
                 context.user_data["awaiting_link_code"] = False
-                display_name = "Patient"
+                language = self._get_language(chat_id)
+                username = None
                 if update.effective_user:
-                    display_name = (
-                        update.effective_user.full_name
-                        or update.effective_user.username
-                        or "Patient"
-                    )
-                ok, message = self.store.link_patient_with_invite(
-                    code=text.strip(),
+                    username = update.effective_user.username or update.effective_user.full_name
+                ok, status = self.store.link_patient_with_invite(
+                    code=text,
                     chat_id=chat_id,
-                    display_name=display_name,
+                    display_name=self._display_name(update),
+                    username=username,
                 )
-                if ok and update.effective_user:
-                    username = (
-                        update.effective_user.username
-                        or update.effective_user.full_name
-                    )
-                    self.store.set_invite_used_by_username(text.strip(), username)
-                await update.message.reply_text(message)
+                await update.message.reply_text(self._prompt_text(f"link_{status}", language))
                 return
 
             self.store.add_message(chat_id, "user", text)
@@ -626,9 +817,9 @@ class TelegramBot:
                 history = []
 
             # Main assistant reply.
-            language = self.store.get_language(chat_id)
+            language = self._get_language(chat_id)
             preferences = self.store.get_patient_preferences(chat_id)
-            result = await run_graph_with_context(
+            result, message_analysis = await run_graph_with_analysis(
                 current_text,
                 history=history,
                 language=language,
@@ -637,6 +828,13 @@ class TelegramBot:
             )
             self.store.add_message(chat_id, "assistant", result)
             await update.message.reply_text(result)
+
+            # Acute risk in a single message must not wait for the periodic summary.
+            crisis_prompt_sent = False
+            if str(message_analysis.risk_level).strip().lower() == "high":
+                self._create_alert_once(chat_id, "high_risk_message", message_analysis)
+                await self._send_crisis_prompt(update, chat_id, language)
+                crisis_prompt_sent = True
 
             # Summary threshold for specialists (user does not receive it).
             user_count = self.store.get_user_message_count(chat_id)
@@ -654,13 +852,7 @@ class TelegramBot:
                 )
                 if user_history:
                     report_language = self.store.get_report_language_for_chat(chat_id) or language
-                    analysis, summary_text = await summarize_dialog(user_history, language=report_language)
-                    logging.info(
-                        "Summary characteristics before DB save: chat_id=%s user_msgs=%s raw=%s",
-                        chat_id,
-                        len(user_history),
-                        analysis.key_characteristics,
-                    )
+                    analysis, _ = await summarize_dialog(user_history, language=report_language)
                     self.store.add_summary(
                         chat_id=chat_id,
                         user_count=user_count,
@@ -676,12 +868,6 @@ class TelegramBot:
                         chat_id=chat_id,
                         characteristics=analysis.key_characteristics,
                     )
-                    saved_chars = self.store.list_recent_characteristics(chat_id, limit=5)
-                    logging.info(
-                        "Summary characteristics after DB save: chat_id=%s saved_preview=%s",
-                        chat_id,
-                        saved_chars,
-                    )
                     self.store.set_last_report_user_count(chat_id, user_count)
 
                     if should_create_alert(analysis):
@@ -691,20 +877,13 @@ class TelegramBot:
                             if alert_risk_level in ("medium", "medium_high")
                             else "high_risk_summary"
                         )
-                        self.store.add_alert(
-                            chat_id=chat_id,
-                            reason=alert_reason,
-                            risk_level=analysis.risk_level,
-                            emotion=analysis.emotion,
-                        )
-                        await update.message.reply_text(
-                            self._crisis_text(language, self._has_specialist(chat_id)),
-                            reply_markup=self._crisis_keyboard(language),
-                        )
+                        created = self._create_alert_once(chat_id, alert_reason, analysis)
+                        if (created or alert_risk_level == "high") and not crisis_prompt_sent:
+                            await self._send_crisis_prompt(update, chat_id, language)
         except Exception:
             logging.exception("Error while handling incoming message")
             await update.message.reply_text(
-                "Sorry, something went wrong. Please try again."
+                self._prompt_text("error", self._get_language(chat_id))
             )
 
     def run(self) -> None:
@@ -719,9 +898,12 @@ class TelegramBot:
         self.app.run_polling()
 
     def _run_webhook(self) -> None:
-        webhook_path = settings.webhook_path or settings.telegram_bot_token
+        if not settings.webhook_host:
+            raise ValueError("USE_WEBHOOK=True requires WEBHOOK_HOST to be set")
+        webhook_path = (settings.webhook_path or settings.telegram_bot_token).strip("/")
         webhook_url = f"{settings.webhook_host.rstrip('/')}/{webhook_path}"
-        logging.info(f"Starting Telegram Bot in WEBHOOK mode at {webhook_url}")
+        # Do not log the URL: by default the path is the bot token.
+        logging.info("Starting Telegram Bot in WEBHOOK mode on port %s", settings.webhook_port)
 
         self.app.run_webhook(
             listen="0.0.0.0",
